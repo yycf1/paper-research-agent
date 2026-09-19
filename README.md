@@ -17,6 +17,8 @@
 | M8 Web 界面 | ✅ 完成（React + TypeScript 文献库/助手双页、一键处理、问答带出处、深链，FastAPI 同端口托管） |
 | M9 会话记忆与真实使用修复 | ✅ 完成（对话会话持久化 + 多轮语境、侧栏会话管理、SQLite 线程修复、LLM 拥塞缓解：快路径 + 去重复优化 + 前端超时） |
 | M10 库管理自主权 | ✅ 完成（检索预览挑选入库、数据源可选、分组导航、论文删除、本地上传） |
+| M11 一致性与静默失败修复 | ✅ 完成（空报告防护 + 存量修复、CLI 检索预览式 + pa prune、qa 出处贯通、跨源重复候选去重、Markdown 渲染与差异化产物展示、未分组入口/分页/防抖） |
+| M12 复现规划器（二期第一步） | ✅ 完成（experiment.json + 复现资产 → repro_plan.md：`pa plan` / API / Web「复现方案」页签） |
 
 ## 快速开始
 
@@ -36,17 +38,19 @@ Windows 下若 `pa` 不在 PATH，用 `python -m uv run pa ...` 等价调用。
 ## 常用命令（M1 起）
 
 ```powershell
-python -m uv run pa search "基于深度学习的医学影像分割" --max 10   # 检索入库（中文自动优化为英文检索词，--raw 跳过优化）
+python -m uv run pa search "基于深度学习的医学影像分割" --max 10   # 检索（默认预览不写库；--pick 1,3-5 选收入库 / --ingest 全收）
 python -m uv run pa download --all          # 下载所有待处理论文的 OA PDF
 python -m uv run pa add "路径\论文.pdf"      # 导入本地 PDF/DOCX（中文文献入口）
 python -m uv run pa parse --all             # 解析为分节 Markdown
-python -m uv run pa analyze --all           # LLM 提取 experiment.json + 精读报告
+python -m uv run pa analyze --all           # LLM 提取 experiment.json + 精读报告（自动补修历史空报告）
 python -m uv run pa index --all             # 分块 + 向量化 + Chroma 索引（增量）
 python -m uv run pa run "图神经网络 推荐"    # 一键流水线：检索→选文→下载→解析→提取→索引（LLM 相关性预筛）
+python -m uv run pa plan <id>               # 复现规划：experiment.json → repro_plan.md（复现链第一步）
 python -m uv run pa ask "论文里用了哪些数据集？"   # 问答（带出处；无参进入多轮 REPL）
 python -m uv run pa chat                    # 自然语言助手（检索/问答/状态/方向引导/域外拒绝）
 python -m uv run pa eval                    # RAG 回归评测（--with-llm 加测答案质量）
 python -m uv run pa status                  # 文献库状态总览
+python -m uv run pa prune --status discovered [--yes]   # 按状态/分组批量清理（全链删除）
 python -m uv run pa doctor                  # 环境自检（平台 + 数据源）
 python -m uv run pa serve                   # Web 界面 + REST API（http://127.0.0.1:8000）
 ```
@@ -56,9 +60,10 @@ python -m uv run pa serve                   # Web 界面 + REST API（http://127
 `pa serve` 后浏览器打开 <http://127.0.0.1:8000>：
 
 - **文献库**：检索入库（支持中文+年份，可勾选数据源；检索结果先预览、勾选、命名分组后再入库）、
-  上传本地 PDF/DOCX、分组导航（按检索主题/上传）、状态过滤、论文详情（精读报告 / 实验结构 / 全文）、
-  「一键处理」（下载→解析→知识提取→索引，带步骤进度）、单篇删除（连产物全链清理）；
-- **助手**：自然语言对话（检索 / 问答 / 状态 / 方向引导），问答带可点击出处；
+  上传本地 PDF/DOCX、分组导航（按检索主题/上传/未分组）、状态过滤、「加载更多」分页、
+  论文详情（精读报告 / 实验结构含复现资产与置信度 / 复现方案 / 全文）、
+  「一键处理」（下载→解析→知识提取→索引，带步骤进度与失败可见）、单篇删除（连产物全链清理）；
+- **助手**：自然语言对话（检索 / 问答 / 状态 / 方向引导），问答带可点击出处（含历史会话）；
   对话自动保存为会话（侧栏可新建 / 切换 / 删除），多轮追问带上下文；
 - 支持深链：`?paper=<id>` 直开论文详情，`?tab=chat&s=<会话id>` 直达某次对话。
 
