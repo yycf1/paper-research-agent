@@ -71,6 +71,7 @@ export interface TagsReply {
 }
 
 export interface SourceRef {
+  n: number[];
   paper_id: string;
   title: string;
   section: string;

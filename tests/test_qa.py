@@ -92,3 +92,17 @@ def test_answer_question_empty_hits_hint() -> None:
     answer, hits = answer_question("问题", retriever=retriever, chat_fn=FakeChat("x"))
     assert hits == []
     assert "pa index" in answer
+
+
+def test_sources_from_hits_align_citation_numbers() -> None:
+    """出处编号与答案 [n] 引用对齐：同章节多片段合并为一条并收集全部片段号。"""
+    from paper_agent.rag.qa import sources_from_hits
+
+    hits = [
+        Hit(paper_id="x:1", title="T1", section="方法", page=3, text="a", distance=0.1),
+        Hit(paper_id="x:1", title="T1", section="结果", page=5, text="b", distance=0.2),
+        Hit(paper_id="x:1", title="T1", section="方法", page=4, text="c", distance=0.3),
+    ]
+    sources = sources_from_hits(hits)
+    assert [s["n"] for s in sources] == [[1, 3], [2]]  # 方法=片段1、3；结果=片段2
+    assert [s["section"] for s in sources] == ["方法", "结果"]

@@ -48,6 +48,30 @@ def build_context(hits: list[Hit]) -> str:
     return "\n\n".join(blocks)
 
 
+def sources_from_hits(hits: list[Hit]) -> list[dict]:
+    """检索命中 → 出处列表，编号与答案中的 [n] 引用对齐。
+
+    答案里的 [n] 指片段序号；同一章节的多个片段合并为一条出处，
+    n 收集该章节全部片段号（如 [1][3]）——否则正文引用与出处清单对不上。
+    """
+    grouped: dict[str, dict] = {}
+    order: list[str] = []
+    for i, h in enumerate(hits, start=1):
+        key = f"{h.paper_id}:{h.section}"
+        if key not in grouped:
+            grouped[key] = {
+                "n": [i],
+                "paper_id": h.paper_id,
+                "title": h.title,
+                "section": h.section,
+                "page": h.page,
+            }
+            order.append(key)
+        else:
+            grouped[key]["n"].append(i)
+    return [grouped[k] for k in order]
+
+
 def answer_question(
     question: str,
     *,

@@ -17,7 +17,7 @@ from paper_agent.download import safe_dirname
 from paper_agent.graph.pipeline import run_pipeline
 from paper_agent.library import Library, PaperRecord
 from paper_agent.models import Paper
-from paper_agent.rag.qa import Retriever, answer_question
+from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.rag.vectorstore import VectorStore
 from paper_agent.services.assistant import handle_message, suggest_directions
 from paper_agent.services.library_ops import UnsupportedFormat, delete_paper, import_local_file
@@ -351,18 +351,7 @@ def api_ask(req: AskRequest) -> dict:
         )
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
-    seen: set[str] = set()
-    sources = []
-    for h in hits:  # 同论文多块收敛为一个来源条目（前端展示用）
-        key = f"{h.paper_id}:{h.section}"
-        if key in seen:
-            continue
-        seen.add(key)
-        sources.append({
-            "paper_id": h.paper_id, "title": h.title,
-            "section": h.section, "page": h.page,
-        })
-    return {"answer": answer, "sources": sources}
+    return {"answer": answer, "sources": sources_from_hits(hits)}
 
 
 class ChatRequest(BaseModel):

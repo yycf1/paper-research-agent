@@ -14,7 +14,7 @@ from paper_agent.config import load_config
 from paper_agent.graph.route import classify_intent, summarize_query_understanding
 from paper_agent.library import Library
 from paper_agent.llm import chat
-from paper_agent.rag.qa import Retriever, answer_question
+from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.services.search import search_and_ingest
 
 HELP_TEXT = (
@@ -44,19 +44,8 @@ class AssistantReply:
 
 
 def _hits_to_sources(hits: list) -> list[dict]:
-    """检索命中 → 去重后的出处列表（同论文同章节收敛为一条）。"""
-    seen: set[str] = set()
-    out: list[dict] = []
-    for h in hits:
-        key = f"{h.paper_id}:{h.section}"
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({
-            "paper_id": h.paper_id, "title": h.title,
-            "section": h.section, "page": h.page,
-        })
-    return out
+    """检索命中 → 去重后的出处列表；n 与答案中的 [n] 引用对齐。"""
+    return sources_from_hits(hits)
 
 
 def handle_message(

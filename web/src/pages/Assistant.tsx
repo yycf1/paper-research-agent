@@ -164,7 +164,7 @@ export default function Assistant({
                 <div className="sources">
                   {t.sources.map((s, j) => (
                     <div key={j} className="src" onClick={() => onOpenDetail(s.paper_id)}>
-                      [{j + 1}] {s.title.slice(0, 50)}{s.title.length > 50 ? "…" : ""} · {s.section}
+                      [{(s.n ?? [j + 1]).join("][")}] {s.title.slice(0, 50)}{s.title.length > 50 ? "…" : ""} · {s.section}
                       {s.page ? ` · 第${s.page}页` : ""}
                     </div>
                   ))}
