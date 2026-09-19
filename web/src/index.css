@@ -127,6 +127,10 @@ table.papers tr.row.sel td { background: rgba(79, 140, 255, 0.1); }
 .kv { display: grid; grid-template-columns: 160px 1fr; gap: 4px 12px; font-size: 13.5px; }
 .kv .k { color: var(--muted); }
 ul.plain { margin: 0; padding-left: 20px; }
+.conf-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+.tag.conf-high { color: var(--green); border-color: rgba(63, 185, 111, 0.4); }
+.tag.conf-mid { color: var(--yellow); border-color: rgba(217, 165, 63, 0.4); }
+.tag.conf-low { color: var(--red); border-color: rgba(224, 86, 79, 0.4); }
 
 /* ---- 助手 ---- */
 .assistant { flex: 1; display: flex; overflow: hidden; }

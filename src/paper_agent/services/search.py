@@ -84,6 +84,7 @@ def search_sources(
 
     result = PreviewResult(plan=plan)
     seen: dict[str, str] = {}  # 去重键（doi 或归一化标题）→ 本次检索内的代表 id
+    rendered: set[str] = set()  # 已渲染候选的代表 id（库内已有条目按其账本 id 计）
 
     def _search_one(keyword: str) -> int:
         """对单个查询词跑全部源并就地去重，返回各源返回的候选总数。"""
@@ -110,8 +111,13 @@ def search_sources(
             result.source_hits[name] = result.source_hits.get(name, 0) + len(papers)
             for p in papers:
                 dup_id = _duplicate_of(lib, seen, p)
-                result.candidates.append(Candidate(paper=p, duplicate_of=dup_id))
                 rep = dup_id or p.source_id
+                if rep in rendered:
+                    # 同一论文（同 DOI/同题/同 sid）不重复渲染：否则预览里
+                    # 一次出现为「新候选」、一次出现为「库内已有」，互相矛盾
+                    continue
+                rendered.add(rep)
+                result.candidates.append(Candidate(paper=p, duplicate_of=dup_id))
                 if p.doi:
                     seen[f"doi:{p.doi}"] = rep
                 seen[f"t:{normalize_title(p.title)}"] = rep

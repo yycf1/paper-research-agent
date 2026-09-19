@@ -93,11 +93,11 @@ export default function PaperDetail({
         </span>
       </div>
 
-      {processing && (
+      {job && (processing || steps.length > 0) && (
         <div className="section-block">
-          <h3>处理进度</h3>
+          <h3>处理进度{!processing && job.status === "done" ? "（已结束）" : ""}</h3>
           <div className="steps">
-            {steps.length === 0 && <div className="hint"><span className="spin" />排队启动中…</div>}
+            {steps.length === 0 && processing && <div className="hint"><span className="spin" />排队启动中…</div>}
             {steps.map((s, i) => (
               <div key={i} className="step">
                 <span className={s.ok ? "ok" : "no"}>{s.ok ? "✓" : "✗"}</span>
@@ -105,6 +105,11 @@ export default function PaperDetail({
               </div>
             ))}
           </div>
+          {!processing && job.status === "done" && typeof job.result?.final_status === "string" && (
+            <div className="hint" style={{ marginTop: 8 }}>
+              最终状态：{statusLabel(String(job.result.final_status))}（失败步骤修正后可重新「一键处理」）
+            </div>
+          )}
         </div>
       )}
       {job?.status === "error" && <div className="err">⚠ 任务失败：{job.error}</div>}
@@ -142,6 +147,14 @@ function stageLabel(s: string): string {
 
 function ExperimentView({ exp }: { exp: ExperimentSchema }) {
   const conf = exp.confidence ?? {};
+  const assets = isRecord(exp.repro_assets) ? exp.repro_assets : null;
+  const notes = typeof exp.reproducibility_notes === "string" ? exp.reproducibility_notes : "";
+  const unverified = Array.isArray(exp.unverified_claims) ? (exp.unverified_claims as unknown[]) : [];
+  const assetGroups: [string, string][] = [
+    ["code_url", "代码仓库"],
+    ["dataset_urls", "数据集"],
+    ["project_page", "项目主页"],
+  ];
   return (
     <div className="section-block">
       <div className="kv" style={{ marginBottom: 14 }}>
@@ -153,7 +166,7 @@ function ExperimentView({ exp }: { exp: ExperimentSchema }) {
       </div>
       <div className="section-block">
         <h3>实验步骤</h3>
-        <div className="body"><ol className="plain" style={{ margin: 0, paddingLeft: 20 }}>{toList(exp.experiment_steps).map((s, i) => <li key={i}>{renderValue(s, true)}</li>)}</ol></div>
+        <div className="body"><ol className="plain" style={{ margin: 0, paddingLeft: 20 }}>{toList(exp.experiment_steps).map((s, i) => <li key={i}>{renderValue(s)}</li>)}</ol></div>
       </div>
       {isRecord(exp.hyperparameters) && Object.keys(exp.hyperparameters).length > 0 && (
         <div className="section-block">
@@ -163,32 +176,94 @@ function ExperimentView({ exp }: { exp: ExperimentSchema }) {
       )}
       <div className="section-block">
         <h3>主要结果</h3>
-        <div className="body"><ul className="plain">{toList(exp.main_results).map((s, i) => <li key={i}>{renderValue(s, true)}</li>)}</ul></div>
+        <div className="body"><ul className="plain">{toList(exp.main_results).map((s, i) => <li key={i}>{renderValue(s)}</li>)}</ul></div>
       </div>
-      <div className="hint">
-        字段置信度：
-        {Object.entries(conf).map(([k, v]) => `${k}=${v}`).join("，") || "未标注"}
+      {assets && assetGroups.some(([k]) => toList(assets[k]).length > 0 && toList(assets[k]).some((x) => x !== "—")) && (
+        <div className="section-block">
+          <h3>复现资产</h3>
+          <div className="body">
+            {assetGroups.map(([k, label]) => {
+              const urls = toList(assets[k]).filter((u) => typeof u === "string" && u);
+              if (urls.length === 0) return null;
+              return (
+                <div key={k} style={{ marginBottom: 6 }}>
+                  <span className="muted">{label}：</span>
+                  {urls.map((u, i) => (
+                    <React.Fragment key={i}>
+                      {i > 0 && "、"}
+                      <a href={u as string} target="_blank" rel="noreferrer">{u as string}</a>
+                    </React.Fragment>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {notes.trim() && (
+        <div className="section-block">
+          <h3>可复现性备注</h3>
+          <div className="body">{notes}</div>
+        </div>
+      )}
+      {unverified.length > 0 && (
+        <div className="section-block">
+          <h3>未验证声明（LLM 推断，文中未明确）</h3>
+          <div className="body"><ul className="plain">{unverified.map((c, i) => <li key={i}>{renderValue(c)}</li>)}</ul></div>
+        </div>
+      )}
+      <div className="conf-row">
+        <span className="hint">字段置信度：</span>
+        {Object.keys(conf).length > 0
+          ? Object.entries(conf).map(([k, v]) => (
+              <span key={k} className={`tag conf-${v === "high" ? "high" : v === "low" ? "low" : "mid"}`} title={FIELD_LABELS[k] ?? k}>
+                {(FIELD_LABELS[k] ?? k)} {String(v)}
+              </span>
+            ))
+          : <span className="hint">未标注</span>}
       </div>
     </div>
   );
 }
 
+/** experiment.json 常见键的中文名（递归渲染与置信度徽章共用）。 */
+const FIELD_LABELS: Record<string, string> = {
+  name: "名称", architecture: "架构", key_components: "关键组件",
+  source: "来源", split: "划分",
+  step: "步骤", description: "说明", details: "细节",
+  value: "结果值", baseline: "基线",
+  code_url: "代码", dataset_urls: "数据集", project_page: "主页",
+  research_goal: "研究目标", method: "方法", datasets: "数据集",
+  hyperparameters: "超参数", experiment_steps: "实验步骤", metrics: "评价指标",
+  main_results: "主要结果", conclusions: "结论", repro_assets: "复现资产",
+  reproducibility_notes: "可复现性备注",
+};
+
+/** URL 列表在正文里渲染为可点击链接。 */
+
 /** 递归渲染 schema 值：对象 → 有序键值；数组 → 列表；字符串原样。 */
-function renderValue(v: unknown, inline = false): React.ReactNode {
+/** 递归渲染 schema 值：对象 → 有序键值；数组 → 列表；URL → 链接；字符串原样。 */
+function renderValue(v: unknown): React.ReactNode {
   if (v == null || v === "") return "—";
-  if (typeof v === "string" || typeof v === "number") return String(v);
+  if (typeof v === "string") {
+    if (/^https?:\/\/\S+$/.test(v)) {
+      return <a href={v} target="_blank" rel="noreferrer">{v}</a>;
+    }
+    return v;
+  }
+  if (typeof v === "number") return String(v);
   if (Array.isArray(v)) {
     if (v.length === 0) return "—";
-    const items = v.map((x, i) => <li key={i}>{renderValue(x, true)}</li>);
-    return inline ? <ul className="plain">{items}</ul> : <ul className="plain">{items}</ul>;
+    const items = v.map((x, i) => <li key={i}>{renderValue(x)}</li>);
+    return <ul className="plain">{items}</ul>;
   }
   if (isRecord(v)) {
     const parts = Object.entries(v)
       .filter(([, x]) => x != null && x !== "" && !(Array.isArray(x) && x.length === 0))
       .map(([k, x]) => (
         <span key={k}>
-          <span className="muted">{k}: </span>
-          {renderValue(x, true)}
+          <span className="muted">{FIELD_LABELS[k] ?? k}: </span>
+          {renderValue(x)}
         </span>
       ));
     return parts.length ? <>{parts.map((p, i) => <React.Fragment key={i}>{p}{i < parts.length - 1 ? "；" : ""}</React.Fragment>)}</> : "—";
