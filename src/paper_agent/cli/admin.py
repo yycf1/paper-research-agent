@@ -1,4 +1,4 @@
-"""版本与环境自检命令：version / doctor。"""
+"""版本、自检与库维护命令：version / doctor / prune。"""
 
 from __future__ import annotations
 
@@ -9,9 +9,10 @@ from rich.table import Table
 from openai import OpenAI
 
 from paper_agent import __version__
-from paper_agent.cli.core import FAIL, OK, SKIP, app, console
+from paper_agent.cli.core import FAIL, OK, SKIP, WARN, _library, app, console
 from paper_agent.config import EndpointConfig, load_config, resolve_endpoint
 from paper_agent.graph.hello import run_hello
+from paper_agent.services.library_ops import delete_paper
 from paper_agent.sources import SourceUnavailable
 from paper_agent.tools import SOURCE_MODULES
 
@@ -85,6 +86,51 @@ def doctor() -> None:
             "3) 重新运行 [cyan]pa doctor[/cyan]。"
         )
         raise typer.Exit(code=1)
+
+
+@app.command()
+def prune(
+    status: str = typer.Option("", "--status", help="按状态批量删除（如 discovered / download_failed）"),
+    tag: str = typer.Option("", "--tag", help="按分组标签删除"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认"),
+) -> None:
+    """批量删除论文（全链清理：账本 + 向量块 + 原文/解析/知识产物）。
+
+    用于治理「检索全量入库」的历史堆积：如 `pa prune --status discovered`。
+    涉及已处理论文（parsed/analyzed/indexed）时会额外警示。
+    """
+    if not status and not tag:
+        console.print(f"{FAIL} 需要 --status 或 --tag 指定删除范围（防止误删全库）。")
+        raise typer.Exit(code=1)
+    cfg = load_config()
+    lib = _library(cfg)
+    try:
+        targets = lib.list(status=status or None, tag=tag or None)
+        if not targets:
+            console.print("没有匹配的论文，未删除任何内容。")
+            return
+        processed = sum(1 for r in targets if r.status in ("parsed", "analyzed", "indexed"))
+        sample = "\n".join(f"  - {r.paper.title[:56]}" for r in targets[:8])
+        more = f"\n  …等共 {len(targets)} 篇" if len(targets) > 8 else ""
+        console.print(
+            f"[bold]将删除 {len(targets)} 篇论文及其全部产物[/bold]（原文/解析/知识/向量块）：\n"
+            + sample + more
+        )
+        if processed:
+            console.print(f"{WARN} 其中 {processed} 篇已有解析/分析产物，删除后需重新处理。")
+        if not yes and not typer.confirm("确认删除？此操作不可恢复。"):
+            console.print("已取消。")
+            return
+        ok = 0
+        for rec in targets:
+            try:
+                if delete_paper(rec.paper.source_id, cfg=cfg, lib=lib):
+                    ok += 1
+            except Exception as exc:
+                console.print(f"{FAIL} [dim]{rec.paper.source_id}[/dim] {str(exc)[:120]}")
+        console.print(f"{OK} 已删除 {ok}/{len(targets)} 篇。")
+    finally:
+        lib.close()
 
 
 def _check_sources(table: Table, cfg: dict) -> bool:

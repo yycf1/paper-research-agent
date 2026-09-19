@@ -40,6 +40,23 @@ class AssistantReply:
     understanding: str = ""
     notes: list[str] = field(default_factory=list)
     new_papers: list = field(default_factory=list)  # search 意图的新入库论文
+    sources: list[dict] = field(default_factory=list)  # qa 意图的出处（Web 渲染可点击）
+
+
+def _hits_to_sources(hits: list) -> list[dict]:
+    """检索命中 → 去重后的出处列表（同论文同章节收敛为一条）。"""
+    seen: set[str] = set()
+    out: list[dict] = []
+    for h in hits:
+        key = f"{h.paper_id}:{h.section}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({
+            "paper_id": h.paper_id, "title": h.title,
+            "section": h.section, "page": h.page,
+        })
+    return out
 
 
 def handle_message(
@@ -86,10 +103,10 @@ def handle_message(
     if retriever.store.count() == 0:
         return AssistantReply("qa", "向量库为空：先运行 `pa index --all` 建立索引。", understanding=understanding)
     try:
-        answer, _hits = answer_question(question, retriever=retriever, history=history)
+        answer, hits = answer_question(question, retriever=retriever, history=history)
     except RuntimeError as exc:  # 缺 Key 等配置问题
         return AssistantReply("qa", f"问答失败：{exc}", understanding=understanding)
-    return AssistantReply("qa", answer, understanding=understanding)
+    return AssistantReply("qa", answer, understanding=understanding, sources=_hits_to_sources(hits))
 
 
 def _do_search(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -103,12 +105,15 @@ def api_status() -> dict:
 def api_papers(
     status: str | None = Query(None, description="按状态过滤"),
     tag: str | None = Query(None, description="按分组标签过滤"),
+    untagged: bool = Query(False, description="只看未分组论文"),
     q: str | None = Query(None, description="标题/作者/DOI 模糊匹配"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     lib: Library = Depends(open_lib),
 ) -> dict:
     records = lib.list(status=status, tag=tag)
+    if untagged:
+        records = [r for r in records if not r.tag]
     if q:
         needle = q.lower()
         records = [
@@ -125,11 +130,14 @@ def api_papers(
 
 @router.get("/tags")
 def api_tags(lib: Library = Depends(open_lib)) -> dict:
-    """分组标签 → 数量，外加按数据源的统计（分组导航用）。"""
+    """分组标签 → 数量，外加按数据源的统计与未分组数量（分组导航用）。"""
     by_source: dict[str, int] = {}
+    untagged = 0
     for r in lib.list():
         by_source[r.paper.source] = by_source.get(r.paper.source, 0) + 1
-    return {"tags": lib.tags(), "sources": by_source}
+        if not r.tag:
+            untagged += 1
+    return {"tags": lib.tags(), "sources": by_source, "untagged": untagged}
 
 
 @router.get("/papers/{sid}")
@@ -269,27 +277,31 @@ def api_upload_paper(
     file: UploadFile = File(...),
     lib: Library = Depends(open_lib),
 ) -> dict:
-    """上传本地 PDF/DOCX：内容哈希幂等，状态直达 downloaded（可再一键处理）。"""
+    """上传本地 PDF/DOCX：内容哈希幂等，状态直达 downloaded（可再一键处理）。
+
+    每次上传落在自己的临时子目录（防同名并发互覆、失败清理不伤他文件），
+    导入完成即清理——import_local_file 已把内容复制进 papers/{sid}/。
+    """
     cfg = load_config()
     name = file.filename or "document.pdf"
-    dest_dir = paths.data_dir(cfg) / "uploads"
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / Path(name).name
-    size = 0
-    with dest.open("wb") as out:
-        while chunk := file.file.read(1024 * 1024):
-            size += len(chunk)
-            if size > MAX_UPLOAD_BYTES:
-                out.close()
-                dest.unlink(missing_ok=True)
-                raise HTTPException(413, "文件超过 50MB 上限")
-            out.write(chunk)
+    upload_dir = paths.data_dir(cfg) / "uploads" / uuid.uuid4().hex[:8]
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    dest = upload_dir / Path(name).name
     try:
-        rec, is_new = import_local_file(dest, cfg=cfg, lib=lib)
-    except UnsupportedFormat as exc:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(400, str(exc)) from exc
-    return {"is_new": is_new, "paper": record_to_dict(rec, with_abstract=True)}
+        size = 0
+        with dest.open("wb") as out:
+            while chunk := file.file.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(413, "文件超过 50MB 上限")
+                out.write(chunk)
+        try:
+            rec, is_new = import_local_file(dest, cfg=cfg, lib=lib)
+        except UnsupportedFormat as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"is_new": is_new, "paper": record_to_dict(rec, with_abstract=True)}
+    finally:
+        shutil.rmtree(upload_dir, ignore_errors=True)
 
 
 class AskRequest(BaseModel):
@@ -361,6 +373,7 @@ def api_chat(req: ChatRequest, lib: Library = Depends(open_lib)) -> dict:
         store.append_message(
             sid, role="assistant", content=reply.reply, intent=reply.intent,
             understanding=reply.understanding, notes=reply.notes,
+            sources=reply.sources,
         )
         return {
             "session_id": sid,
@@ -369,6 +382,7 @@ def api_chat(req: ChatRequest, lib: Library = Depends(open_lib)) -> dict:
             "understanding": reply.understanding,
             "notes": reply.notes,
             "new_papers": [record_to_dict(r) for r in reply.new_papers],
+            "sources": reply.sources,
         }
     finally:
         store.close()

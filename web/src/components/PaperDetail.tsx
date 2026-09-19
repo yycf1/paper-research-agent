@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { api, pollJob, type ExperimentSchema, type Job, type PaperDetail } from "../api";
+import Markdown from "../md";
+import { statusLabel } from "../labels";
 
 type Tab = "report" | "experiment" | "fulltext" | "abstract";
 
@@ -36,6 +38,7 @@ export default function PaperDetail({
     } catch (e) {
       setErr(String(e));
       setJob(null);
+      load(); // 失败也刷新：paper.error 可能已被后端更新
     }
   };
 
@@ -54,7 +57,8 @@ export default function PaperDetail({
   const steps = ((job?.result?.steps as { stage: string; ok: boolean; detail: string }[]) ?? []);
 
   const doDelete = async () => {
-    if (!window.confirm(`确定删除《${paper.title.slice(0, 40)}…》？\n将同时删除其原文、解析文本、知识与索引产物，不可恢复。`)) return;
+    const shown = paper.title.length > 40 ? paper.title.slice(0, 40) + "…" : paper.title;
+    if (!window.confirm(`确定删除《${shown}》？\n将同时删除其原文、解析文本、知识与索引产物，不可恢复。`)) return;
     setErr("");
     try {
       await api.deletePaper(id);
@@ -77,7 +81,7 @@ export default function PaperDetail({
         </div>
       </div>
       <div className="meta-row">
-        <span className={`tag status-${paper.status}`}>{paper.status}</span>
+        <span className={`tag status-${paper.status}`}>{statusLabel(paper.status)}</span>
         <span>{paper.source}</span>
         {paper.tag && <span className="tag">分组：{paper.tag}</span>}
         {paper.year && <span>{paper.year} 年</span>}
@@ -119,10 +123,10 @@ export default function PaperDetail({
               </span>
             ))}
           </div>
-          {active === "report" && <div className="section-block"><div className="body">{paper.report}</div></div>}
+          {active === "report" && <div className="section-block"><Markdown className="body-md" text={paper.report ?? ""} /></div>}
           {active === "abstract" && <div className="section-block"><div className="body">{paper.abstract}</div></div>}
           {active === "fulltext" && (
-            <div className="section-block"><div className="body" style={{ maxHeight: 560 }}>{paper.full_text}</div></div>
+            <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>
           )}
           {active === "experiment" && exp && <ExperimentView exp={exp} />}
         </>

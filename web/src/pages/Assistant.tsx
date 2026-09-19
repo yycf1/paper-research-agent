@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type ChatSession, type ChatReply } from "../api";
+import { api, type ChatSession, type ChatReply, type SourceRef } from "../api";
+import Markdown from "../md";
 
 interface Turn {
   role: "user" | "bot";
@@ -7,6 +8,7 @@ interface Turn {
   understanding?: string;
   notes?: string[];
   newPapers?: { source_id: string; title: string }[];
+  sources?: SourceRef[];
 }
 
 const WELCOME: Turn[] = [
@@ -17,12 +19,13 @@ const WELCOME: Turn[] = [
   },
 ];
 
-function turnsFromHistory(messages: { role: string; content: string; understanding: string | null; notes: string[] }[]): Turn[] {
+function turnsFromHistory(messages: { role: string; content: string; understanding: string | null; notes: string[]; sources?: SourceRef[] | null }[]): Turn[] {
   return messages.map((m) => ({
     role: m.role === "user" ? "user" : "bot",
     text: m.content,
     understanding: m.understanding ?? undefined,
     notes: m.notes ?? undefined,
+    sources: m.sources ?? undefined,
   }));
 }
 
@@ -102,6 +105,7 @@ export default function Assistant({
           understanding: reply.understanding,
           notes: reply.notes,
           newPapers: reply.new_papers,
+          sources: reply.sources,
         },
       ]);
       if (reply.session_id !== activeId) {
@@ -155,7 +159,17 @@ export default function Assistant({
           {turns.map((t, i) => (
             <div key={i} className={`msg ${t.role}`}>
               {t.understanding && <div className="under">（{t.understanding}）</div>}
-              {t.text}
+              {t.role === "bot" ? <Markdown text={t.text} /> : t.text}
+              {t.sources && t.sources.length > 0 && (
+                <div className="sources">
+                  {t.sources.map((s, j) => (
+                    <div key={j} className="src" onClick={() => onOpenDetail(s.paper_id)}>
+                      [{j + 1}] {s.title.slice(0, 50)}{s.title.length > 50 ? "…" : ""} · {s.section}
+                      {s.page ? ` · 第${s.page}页` : ""}
+                    </div>
+                  ))}
+                </div>
+              )}
               {t.notes && t.notes.length > 0 && t.notes.map((n, j) => <div key={j} className="note">⚠ {n}</div>)}
               {t.newPapers && t.newPapers.length > 0 && (
                 <div className="papers-mini">

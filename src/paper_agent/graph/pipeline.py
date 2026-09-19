@@ -20,7 +20,7 @@ from paper_agent import paths
 from paper_agent.config import load_config
 from paper_agent.download import DownloadError, download_pdf, safe_dirname
 from paper_agent.extraction.experiment_flow import extract_experiment
-from paper_agent.extraction.report import generate_report
+from paper_agent.extraction.report import EmptyReportError, generate_report
 from paper_agent.library import Library
 from paper_agent.llm import chat, parse_json_reply
 from paper_agent.parsing import extract_markdown
@@ -268,14 +268,40 @@ def run_parse(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
     return counts, notes
 
 
+_REPORT_MIN_CHARS = 30  # 正常精读报告 600~1000 字；低于此值视为空报告（历史缺陷产物）
+
+
+def _knowledge_dir_for(cfg: dict, sid: str) -> Path:
+    return paths.knowledge_dir(cfg) / sid.replace(":", "_").replace("/", "_")
+
+
+def _report_is_bad(cfg: dict, sid: str) -> bool:
+    rp = _knowledge_dir_for(cfg, sid) / "report.md"
+    if not rp.exists():
+        return True
+    try:
+        return len(rp.read_text(encoding="utf-8").strip()) < _REPORT_MIN_CHARS
+    except OSError:
+        return True
+
+
 def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
     """知识提取：parsed → analyzed（experiment.json + report.md）。
 
     LLM 配置缺失（RuntimeError）属环境问题，直接放弃本阶段而不是逐篇撞墙。
+    修复路径：analyzed/indexed 中 report.md 缺失或近乎为空的论文（M11 前
+    空回复会写空报告还推进状态）只重新生成报告——experiment.json 已存在时
+    跳过提取不重复付费，原状态保留（indexed 不降级，否则重试扫描又看不见）。
     """
-    counts = {"analyzed": 0, "analyze_failed": 0, "analyze_tokens": 0}
+    counts = {"analyzed": 0, "analyze_failed": 0, "analyze_tokens": 0, "report_repaired": 0}
     notes: list[str] = []
     targets = lib.list(status="parsed")
+    repaired_status = {}
+    for rec in lib.list(status="analyzed") + lib.list(status="indexed"):
+        if _report_is_bad(cfg, rec.paper.source_id):
+            targets.append(rec)
+            repaired_status[rec.paper.source_id] = rec.status
+            notes.append(f"{rec.paper.source_id} 报告缺失/为空，本轮仅重生成报告")
     if not targets:
         return counts, notes
     try:
@@ -293,8 +319,28 @@ def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
             continue
         try:
             markdown = md_path.read_text(encoding="utf-8")
-            experiment = extract_experiment(markdown, chat_fn=chat)
-            report, report_usage = generate_report(markdown, chat_fn=chat)
+            experiment = None
+            if sid in repaired_status:
+                exp_path = _knowledge_dir_for(cfg, sid) / "experiment.json"
+                if exp_path.exists():
+                    try:
+                        loaded = json.loads(exp_path.read_text(encoding="utf-8"))
+                        if isinstance(loaded, dict) and loaded.get("token_usage"):
+                            experiment = loaded
+                    except (ValueError, OSError):
+                        experiment = None
+            if experiment is not None:
+                report, report_usage = generate_report(markdown, chat_fn=chat)
+                counts["report_repaired"] += 1
+            else:
+                experiment = extract_experiment(markdown, chat_fn=chat)
+                report, report_usage = generate_report(markdown, chat_fn=chat)
+        except EmptyReportError as exc:
+            # 空报告是单篇失败（不中止整批），状态保持 parsed 可重试
+            lib.set_status(sid, "parsed", error=f"分析失败：{exc}"[:500])
+            counts["analyze_failed"] += 1
+            notes.append(f"{p.title[:36]}… 空报告，稍后重试")
+            continue
         except RuntimeError as exc:
             return counts, notes + [f"知识提取中止：{exc}"]
         except Exception as exc:
@@ -302,7 +348,7 @@ def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
             counts["analyze_failed"] += 1
             notes.append(f"{p.title[:36]}… 分析失败：{str(exc)[:60]}")
             continue
-        out_dir = paths.knowledge_dir(cfg) / sid.replace(":", "_").replace("/", "_")
+        out_dir = _knowledge_dir_for(cfg, sid)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "experiment.json").write_text(
             json.dumps(experiment, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -314,7 +360,8 @@ def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
         )
         counts["analyzed"] += 1
         counts["analyze_tokens"] += tokens
-        lib.set_status(sid, "analyzed", error=None)
+        # 修复目标保留原状态（indexed 不降级）；parsed 正常推进
+        lib.set_status(sid, repaired_status.get(sid, "analyzed"), error=None)
     return counts, notes
 
 

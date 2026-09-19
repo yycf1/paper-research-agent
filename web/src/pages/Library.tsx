@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Paper, type SearchReply, type StatusSummary, type TagsReply } from "../api";
 import PaperDetail from "../components/PaperDetail";
+import { STATUS_ORDER, statusLabel } from "../labels";
 
-const STATUS_ORDER = ["discovered", "downloaded", "parsed", "analyzed", "indexed", "download_failed"];
+const PAGE_SIZE = 200; // 后端单页上限；超出部分用「加载更多」追加
 const SOURCE_LABELS: Record<string, string> = {
   openalex: "OpenAlex",
   europepmc: "Europe PMC",
@@ -24,8 +25,10 @@ export default function Library({
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState("");
   const [tag, setTag] = useState("");
+  const [untaggedOnly, setUntaggedOnly] = useState(false);
   const [tagInfo, setTagInfo] = useState<TagsReply | null>(null);
   const [q, setQ] = useState("");
+  const [qInput, setQInput] = useState("");
   const [loading, setLoading] = useState(false);
 
   // 检索预览
@@ -50,7 +53,13 @@ export default function Library({
     setLoading(true);
     setErr("");
     try {
-      const data = await api.papers({ status: status || undefined, tag: tag || undefined, q: q || undefined, limit: 200 });
+      const data = await api.papers({
+        status: status || undefined,
+        tag: untaggedOnly ? undefined : tag || undefined,
+        untagged: untaggedOnly || undefined,
+        q: q || undefined,
+        limit: PAGE_SIZE,
+      });
       setPapers(data.papers);
       setTotal(data.total);
     } catch (e) {
@@ -58,7 +67,7 @@ export default function Library({
     } finally {
       setLoading(false);
     }
-  }, [status, tag, q]);
+  }, [status, tag, untaggedOnly, q]);
 
   useEffect(() => {
     load();
@@ -66,6 +75,33 @@ export default function Library({
   useEffect(() => {
     loadTags();
   }, [loadTags]);
+
+  // 库内筛选防抖：每个按键一次请求在 200 条 ×  SQLite 上是浪费
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => setQ(qInput.trim()), 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [qInput]);
+
+  const loadMore = async () => {
+    setErr("");
+    try {
+      const data = await api.papers({
+        status: status || undefined,
+        tag: untaggedOnly ? undefined : tag || undefined,
+        untagged: untaggedOnly || undefined,
+        q: q || undefined,
+        limit: PAGE_SIZE,
+        offset: papers.length,
+      });
+      setPapers((cur) => [...cur, ...data.papers]);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
 
   const toggleSource = (s: string) =>
     setSources((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
@@ -106,8 +142,13 @@ export default function Library({
       const out = await api.ingest(chosen, ingestTag.trim());
       setPreview(null);
       setNotes([`已入库 ${out.ingested} 篇（${out.duplicates} 篇与库内已有重复，仅合并信息）。`]);
-      if (ingestTag.trim()) setTag(ingestTag.trim());
-      else load();
+      // 总是刷新列表：目标分组与当前过滤相同时 setTag 不触发重渲染
+      if (ingestTag.trim() && tag !== ingestTag.trim()) {
+        setUntaggedOnly(false);
+        setTag(ingestTag.trim());
+      } else {
+        await load();
+      }
       onChanged();
       loadTags();
     } catch (e) {
@@ -123,9 +164,10 @@ export default function Library({
     try {
       const out = await api.upload(file);
       setNotes([out.is_new ? `已上传：${out.paper.title}（可直接「一键处理」）` : `该文件已存在（幂等跳过）：${out.paper.title}`]);
-      setTag("本地上传");
+      setTag("");
+      setUntaggedOnly(false);
+      await load();
       onChanged();
-      load();
       loadTags();
     } catch (e) {
       setErr(String(e));
@@ -150,6 +192,8 @@ export default function Library({
           <input
             type="number"
             placeholder="年份 ≥"
+            min={1900}
+            max={2100}
             style={{ width: 84 }}
             value={searchYear}
             onChange={(e) => setSearchYear(e.target.value)}
@@ -184,33 +228,62 @@ export default function Library({
           <input
             type="text"
             placeholder="在库内筛选：标题 / 作者 / DOI…"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
+            value={qInput}
+            onChange={(e) => setQInput(e.target.value)}
             style={{ maxWidth: 260 }}
           />
           <div className="chips">
-            <span className={`chip ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>
+            <span
+              className={`chip ${status === "" ? "on" : ""}`}
+              onClick={() => setStatus("")}
+            >
               全部 {summary?.total ?? ""}
             </span>
             {STATUS_ORDER.filter((s) => summary?.counts[s]).map((s) => (
               <span key={s} className={`chip ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>
-                {s === "download_failed" ? "失败" : label(s)} {summary?.counts[s]}
+                {statusLabel(s)} {summary?.counts[s]}
               </span>
             ))}
           </div>
         </div>
-        {Object.keys(tagInfo?.tags ?? {}).length > 0 && (
+        {(Object.keys(tagInfo?.tags ?? {}).length > 0 || (tagInfo?.untagged ?? 0) > 0) && (
           <div className="toolbar" style={{ borderTop: "none", paddingTop: 0 }}>
             <span className="hint" style={{ whiteSpace: "nowrap" }}>分组：</span>
             <div className="chips">
-              <span className={`chip ${tag === "" ? "on" : ""}`} onClick={() => setTag("")}>
+              <span
+                className={`chip ${tag === "" && !untaggedOnly ? "on" : ""}`}
+                onClick={() => {
+                  setTag("");
+                  setUntaggedOnly(false);
+                }}
+              >
                 不限
               </span>
               {Object.entries(tagInfo!.tags).slice(0, 12).map(([t, n]) => (
-                <span key={t} className={`chip ${tag === t ? "on" : ""}`} onClick={() => setTag(t)} title={t}>
+                <span
+                  key={t}
+                  className={`chip ${tag === t && !untaggedOnly ? "on" : ""}`}
+                  onClick={() => {
+                    setUntaggedOnly(false);
+                    setTag(t);
+                  }}
+                  title={t}
+                >
                   {t.length > 18 ? t.slice(0, 18) + "…" : t} {n}
                 </span>
               ))}
+              {(tagInfo?.untagged ?? 0) > 0 && (
+                <span
+                  className={`chip ${untaggedOnly ? "on" : ""}`}
+                  onClick={() => {
+                    setTag("");
+                    setUntaggedOnly(true);
+                  }}
+                  title="检索全量入库等来源不明的论文"
+                >
+                  未分组 {tagInfo!.untagged}
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -232,7 +305,11 @@ export default function Library({
             </div>
           ) : papers.length === 0 ? (
             <div className="loading">
-              {tag ? "该分组下暂无论文。" : "没有符合条件的论文。检索一批，或上传本地 PDF/DOCX。"}
+              {untaggedOnly
+                ? "没有未分组的论文。"
+                : tag
+                  ? "该分组下暂无论文。"
+                  : "没有符合条件的论文。检索一批，或上传本地 PDF/DOCX。"}
             </div>
           ) : (
             <table className="papers">
@@ -254,7 +331,7 @@ export default function Library({
                   >
                     <td>
                       <span className={`tag status-${p.status}`}>
-                        {p.status === "download_failed" ? "失败" : label(p.status)}
+                        {statusLabel(p.status)}
                       </span>
                     </td>
                     <td>{p.year ?? "-"}</td>
@@ -269,6 +346,13 @@ export default function Library({
                 ))}
               </tbody>
             </table>
+          )}
+          {!loading && papers.length < total && (
+            <div className="loading" style={{ padding: 12 }}>
+              <span className="chip" onClick={loadMore}>
+                加载更多（已显示 {papers.length} / {total} 篇）
+              </span>
+            </div>
           )}
         </div>
       </div>
@@ -347,15 +431,4 @@ export default function Library({
       )}
     </div>
   );
-}
-
-function label(s: string): string {
-  const m: Record<string, string> = {
-    discovered: "已发现",
-    downloaded: "已下载",
-    parsed: "已解析",
-    analyzed: "已分析",
-    indexed: "已入库",
-  };
-  return m[s] ?? s;
 }

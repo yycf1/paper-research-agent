@@ -66,11 +66,19 @@ export interface IngestReply {
 export interface TagsReply {
   tags: Record<string, number>;
   sources: Record<string, number>;
+  untagged: number;
+}
+
+export interface SourceRef {
+  paper_id: string;
+  title: string;
+  section: string;
+  page: number;
 }
 
 export interface AskReply {
   answer: string;
-  sources: { paper_id: string; title: string; section: string; page: number }[];
+  sources: SourceRef[];
 }
 
 export interface ChatReply {
@@ -80,6 +88,7 @@ export interface ChatReply {
   understanding: string;
   notes: string[];
   new_papers: Paper[];
+  sources?: SourceRef[];
 }
 
 export interface ChatSession {
@@ -97,6 +106,7 @@ export interface ChatMessage {
   intent: string | null;
   understanding: string | null;
   notes: string[];
+  sources?: SourceRef[] | null;
   created_at: string;
 }
 
@@ -141,9 +151,9 @@ async function req<T>(path: string, init?: RequestInit, timeoutMs = 120_000): Pr
 
 export const api = {
   status: () => req<StatusSummary>("/status"),
-  papers: (params: { status?: string; tag?: string; q?: string; limit?: number }) => {
+  papers: (params: { status?: string; tag?: string; untagged?: boolean; q?: string; limit?: number; offset?: number }) => {
     const usp = new URLSearchParams();
-    Object.entries(params).forEach(([k, v]) => v && usp.set(k, String(v)));
+    Object.entries(params).forEach(([k, v]) => v !== undefined && v !== "" && v !== false && usp.set(k, String(v)));
     return req<{ total: number; papers: Paper[] }>(`/papers?${usp}`);
   },
   paper: (id: string) => req<PaperDetail>(`/papers/${encodeURIComponent(id)}`),

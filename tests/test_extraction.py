@@ -8,6 +8,7 @@ from paper_agent.extraction.experiment_flow import (
     merge_repro_assets,
     normalize_experiment,
 )
+from paper_agent.extraction.report import generate_report
 from paper_agent.llm import parse_json_reply
 
 
@@ -82,3 +83,29 @@ def test_parse_json_reply_variants():
     assert parse_json_reply('前言 {"a": {"b": 2}} 后记') == {"a": {"b": 2}}
     with pytest.raises(ValueError):
         parse_json_reply("完全没有 JSON")
+
+
+def test_generate_report_retries_empty_reply():
+    """首次空回复（GLM 思考吃满 max_tokens 的历史缺陷）→ 禁思考重问一次。"""
+    calls = []
+
+    def fake_chat(messages, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return "   ", {"prompt": 5, "completion": 0, "model": "m"}
+        assert kw.get("thinking") is False  # 重问必须禁用思考
+        return "## 一句话总结：内容完整有效的报告。", {"prompt": 7, "completion": 9, "model": "m"}
+
+    report, usage = generate_report("论文文本", chat_fn=fake_chat)
+    assert report.startswith("## 一句话总结")
+    assert usage == {"prompt": 12, "completion": 9, "model": "m"}
+    assert len(calls) == 2
+
+
+def test_generate_report_raises_on_persistent_empty():
+    """两次都空 → 抛 RuntimeError（调用方按分析失败处理，绝不写空报告）。"""
+    def fake_chat(messages, **kw):
+        return "", {"prompt": 1, "completion": 0}
+
+    with pytest.raises(RuntimeError, match="空报告"):
+        generate_report("论文文本", chat_fn=fake_chat)

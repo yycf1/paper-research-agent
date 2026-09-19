@@ -32,6 +32,10 @@ _PROMPT = """你是论文精读助手。依据我提供的论文文本写一份�
 _FENCE_RE = re.compile(r"^\s*```(?:markdown|md)?\s*\n(.*?)\n?```\s*$", re.DOTALL)
 
 
+class EmptyReportError(RuntimeError):
+    """LLM 重试后仍返回空报告（按单篇分析失败处理，不中止整批）。"""
+
+
 def strip_code_fence(text: str) -> str:
     """LLM 有时把整份 Markdown 报告包进代码围栏，剥掉首尾围栏行。"""
     m = _FENCE_RE.match(text.strip())
@@ -39,10 +43,23 @@ def strip_code_fence(text: str) -> str:
 
 
 def generate_report(markdown: str, *, chat_fn=chat) -> tuple[str, dict]:
-    """生成精读报告。返回 (markdown, token用量)。chat_fn 可注入便于离线测试。"""
-    reply, usage = chat_fn(
-        [{"role": "user", "content": _PROMPT.format(paper_text=markdown[:MAX_INPUT_CHARS])}],
-        max_tokens=2048,
-        temperature=0.3,
-    )
-    return strip_code_fence(reply), usage
+    """生成精读报告。返回 (markdown, token用量)。chat_fn 可注入便于离线测试。
+
+    空回复（GLM 混合推理模型思考 tokens 吃光 max_tokens 时出现过）禁用思考
+    重问一次；仍为空则抛 RuntimeError——调用方按「分析失败」处理，绝不把
+    空报告写盘后还把状态推进到 analyzed（M11 前的真实缺陷）。
+    """
+    messages = [{"role": "user", "content": _PROMPT.format(paper_text=markdown[:MAX_INPUT_CHARS])}]
+    reply, usage = chat_fn(messages, max_tokens=2048, temperature=0.3)
+    if not reply.strip():
+        reply2, usage2 = chat_fn(messages, max_tokens=2048, temperature=0.3, thinking=False)
+        usage = {
+            "prompt": usage.get("prompt", 0) + usage2.get("prompt", 0),
+            "completion": usage.get("completion", 0) + usage2.get("completion", 0),
+            "model": usage2.get("model") or usage.get("model"),
+        }
+        reply = reply2
+    report = strip_code_fence(reply)
+    if not report.strip():
+        raise EmptyReportError("LLM 返回空报告（重试后仍为空）")
+    return report, usage

@@ -97,7 +97,7 @@ def fake_io(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         pl, "generate_report",
-        lambda markdown, chat_fn=None: ("report", {"prompt": 10, "completion": 5}),
+        lambda markdown, chat_fn=None: ("# 一句话总结\n\n这份报告内容完整，远超空报告阈值。" * 2, {"prompt": 10, "completion": 5}),
     )
     monkeypatch.setattr(pl, "embed", lambda texts: [[0.0] * 4 for _ in texts])
     monkeypatch.setattr(pl, "VectorStore", _make_fake_store(store_state))
@@ -316,5 +316,80 @@ def test_select_papers_llm_failure_falls_back(tmp_path):
         assert selected == ["openalex:W0", "openalex:W1"]
         assert "预筛不可用" in reason
 
+    finally:
+        lib.close()
+
+
+def test_analyze_repairs_empty_report_preserves_status(fake_io, monkeypatch, tmp_path):
+    """M11 前缺陷的存量修复：报告缺失/为空的 analyzed/indexed 论文只补报告，
+    experiment.json 不重复提取，状态不降级（indexed 保持 indexed）。"""
+    import json as _json
+
+    cfg, _papers, _store = fake_io
+    lib = Library(tmp_path / "data" / "library.db")
+    try:
+        for sid, status in [("openalex:WA", "analyzed"), ("openalex:WB", "indexed")]:
+            lib.upsert_paper(_paper(sid, "T " + sid, year=2023))
+            kd = tmp_path / "data" / "knowledge" / sid.replace(":", "_")
+            kd.mkdir(parents=True, exist_ok=True)
+            (kd / "report.md").write_text("\n", encoding="utf-8")  # 历史空报告
+            (kd / "experiment.json").write_text(
+                _json.dumps({"research_goal": "g", "token_usage": {"prompt": 1, "completion": 1}}),
+                encoding="utf-8",
+            )
+            pd = tmp_path / "data" / "parsed" / sid.replace(":", "_")
+            pd.mkdir(parents=True, exist_ok=True)
+            (pd / "full_text.md").write_text("正文内容。" * 100, encoding="utf-8")
+            lib.set_status(sid, status)
+
+        calls = {"extract": 0, "report": 0}
+
+        def fake_extract(markdown, chat_fn=None):
+            calls["extract"] += 1
+            return {"token_usage": {"prompt": 10, "completion": 5}}
+
+        def fake_report(markdown, chat_fn=None):
+            calls["report"] += 1
+            return ("# 一句话总结\n" + "完整报告内容。" * 20, {"prompt": 1, "completion": 1})
+
+        monkeypatch.setattr(pl, "extract_experiment", fake_extract)
+        monkeypatch.setattr(pl, "generate_report", fake_report)
+        counts, notes = pl.run_analyze(lib, cfg)
+        assert calls["extract"] == 0  # experiment.json 在，不重复提取（不重复付费）
+        assert calls["report"] == 2
+        assert counts["report_repaired"] == 2
+        assert lib.get("openalex:WA").status == "analyzed"  # 原状态保留
+        assert lib.get("openalex:WB").status == "indexed"  # 不降级
+        repaired = (tmp_path / "data" / "knowledge" / "openalex_WB" / "report.md").read_text(encoding="utf-8")
+        assert len(repaired.strip()) > 30
+    finally:
+        lib.close()
+
+
+def test_analyze_empty_reply_keeps_parsed_retriable(fake_io, monkeypatch, tmp_path):
+    """generate_report 空报告抛错 → 单篇失败，状态保持 parsed 且 error 保留。"""
+    cfg, _papers, _store = fake_io
+    monkeypatch.setattr(
+        pl, "extract_experiment",
+        lambda md, chat_fn=None: {"token_usage": {"prompt": 1, "completion": 1}},
+    )
+
+    def empty_report(markdown, chat_fn=None):
+        raise pl.EmptyReportError("LLM 返回空报告（重试后仍为空）")
+
+    monkeypatch.setattr(pl, "generate_report", empty_report)
+    lib = Library(tmp_path / "data" / "library.db")
+    try:
+        lib.upsert_paper(_paper("openalex:W1", "Paper One", year=2023))
+        lib.set_status("openalex:W1", "parsed")
+        pd = tmp_path / "data" / "parsed" / "openalex_W1"
+        pd.mkdir(parents=True, exist_ok=True)
+        (pd / "full_text.md").write_text("正文内容。" * 100, encoding="utf-8")
+        counts, notes = pl.run_analyze(lib, cfg)
+        assert counts["analyze_failed"] == 1
+        assert any("空报告" in n for n in notes)
+        rec = lib.get("openalex:W1")
+        assert rec.status == "parsed"  # 可被重试扫描发现
+        assert "分析失败" in (rec.error or "")
     finally:
         lib.close()

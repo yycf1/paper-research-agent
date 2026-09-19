@@ -44,6 +44,14 @@ class ChatStore:
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """老库原地升级：缺 sources 列时补齐（M11 问答出处持久化）。"""
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(chat_messages)")}
+        if "sources" not in cols:
+            self.conn.execute("ALTER TABLE chat_messages ADD COLUMN sources TEXT")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -98,12 +106,18 @@ class ChatStore:
         intent: str = "",
         understanding: str = "",
         notes: list[str] | None = None,
+        sources: list[dict] | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         self.conn.execute(
-            "INSERT INTO chat_messages (session_id, role, content, intent, understanding, notes, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (sid, role, content, intent, understanding, json.dumps(notes or [], ensure_ascii=False), now),
+            "INSERT INTO chat_messages (session_id, role, content, intent, understanding, notes, sources, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                sid, role, content, intent, understanding,
+                json.dumps(notes or [], ensure_ascii=False),
+                json.dumps(sources or [], ensure_ascii=False),
+                now,
+            ),
         )
         self.conn.execute(
             "UPDATE chat_sessions SET updated_at = ? WHERE id = ?", (now, sid)
@@ -112,7 +126,7 @@ class ChatStore:
 
     def get_messages(self, sid: str) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT id, role, content, intent, understanding, notes, created_at"
+            "SELECT id, role, content, intent, understanding, notes, sources, created_at"
             " FROM chat_messages WHERE session_id = ? ORDER BY id",
             (sid,),
         ).fetchall()
@@ -120,5 +134,6 @@ class ChatStore:
         for r in rows:
             d = dict(r)
             d["notes"] = json.loads(d["notes"] or "[]")
+            d["sources"] = json.loads(d["sources"] or "[]")
             out.append(d)
         return out
