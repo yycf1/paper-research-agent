@@ -22,6 +22,7 @@ export interface PaperDetail extends Paper {
   abstract: string;
   experiment: ExperimentSchema | null;
   report: string | null;
+  repro_plan: string | null;
   full_text: string | null;
 }
 
@@ -204,6 +205,12 @@ export const api = {
     req<{ ok: boolean }>(`/sessions/${sid}`, { method: "DELETE" }),
   process: (id: string) =>
     req<Job>(`/papers/${encodeURIComponent(id)}/process`, { method: "POST" }),
+  plan: (id: string) =>
+    req<{ source_id: string; repro_plan: string; tokens: number }>(
+      `/papers/${encodeURIComponent(id)}/plan`,
+      { method: "POST" },
+      180_000,
+    ),
   run: (query: string) =>
     req<Job>("/jobs/run", { method: "POST", body: JSON.stringify({ query }) }),
   job: (id: string) => req<Job>(`/jobs/${id}`),

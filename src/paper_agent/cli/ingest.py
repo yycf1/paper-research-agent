@@ -401,6 +401,53 @@ def analyze(
 
 
 @app.command()
+def plan(
+    ids: list[str] = typer.Argument(..., help="论文 id 片段（须已分析，experiment.json 存在）"),
+    force: bool = typer.Option(False, "--force", "-f", help="已存在复现方案时重新生成"),
+) -> None:
+    """复现规划：experiment.json + 复现资产 → repro_plan.md（二期复现链第一步）。
+
+    产出「复现目标 / 资产评估 / 环境搭建 / 实施步骤 / 指标比对 / 风险缺口」，
+    只做规划不执行代码；不改变论文生命周期状态。
+    """
+    from paper_agent.services.repro import generate_repro_plan, repro_plan_path
+
+    cfg = load_config()
+    lib = _library(cfg)
+    try:
+        targets = _resolve(lib, ids)
+        if not targets:
+            console.print("没有匹配的论文。")
+            return
+        ok = fail = skip = 0
+        total_tokens = 0
+        for rec in targets:
+            sid = rec.paper.source_id
+            out = repro_plan_path(cfg, sid)
+            if out.exists() and not force:
+                console.print(f"{WARN} [dim]{sid}[/dim] 已有复现方案（--force 重新生成）：{out}")
+                skip += 1
+                continue
+            try:
+                console.print(f"⏳ [dim]{sid}[/dim] {rec.paper.title[:36]}… 生成复现方案…")
+                _plan, usage = generate_repro_plan(sid, cfg=cfg, lib=lib)
+                tokens = usage["prompt"] + usage["completion"]
+                total_tokens += tokens
+                console.print(f"{OK} [dim]{sid}[/dim] {rec.paper.title[:36]}…（~{tokens} tokens）→ {out}")
+                ok += 1
+            except ValueError as exc:
+                console.print(f"{FAIL} [dim]{sid}[/dim] {exc}")
+                fail += 1
+            except Exception as exc:
+                console.print(f"{FAIL} [dim]{sid}[/dim] {str(exc)[:160]}")
+                fail += 1
+        extra = f"，{skip} 篇跳过" if skip else ""
+        console.print(f"\n复现规划完成：{ok} 成功，{fail} 失败{extra}，共约 {total_tokens} tokens")
+    finally:
+        lib.close()
+
+
+@app.command()
 def index(
     ids: list[str] = typer.Argument(None, help="论文 id 片段；缺省索引 parsed/analyzed 状态论文"),
     all: bool = typer.Option(False, "--all", help="索引全部可索引内容（含仅摘要论文）"),

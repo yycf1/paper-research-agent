@@ -313,3 +313,24 @@ def test_process_paper_job(monkeypatch, tmp_path):
     assert job["status"] == "done"
     assert job["result"]["final_status"] == "indexed"
     assert client.post("/api/papers/openalex:NOPE/process").status_code == 404
+
+
+def test_plan_paper_endpoint(monkeypatch, tmp_path):
+    """复现规划端点：成功返回方案；未知论文 404；未分析论文 400。"""
+    _seed(tmp_path).close()  # W1 是 parsed，无 experiment.json
+    client = _client(monkeypatch, tmp_path)
+
+    def fake_plan(sid, *, cfg, lib):
+        return "## 复现目标\n对齐指标。", {"prompt": 10, "completion": 5}
+
+    monkeypatch.setattr(rt, "generate_repro_plan", fake_plan)
+    r = client.post("/api/papers/openalex:W1/plan")
+    assert r.status_code == 200
+    assert r.json()["repro_plan"].startswith("## 复现目标")
+    assert client.post("/api/papers/openalex:NOPE/plan").status_code == 404
+
+    def fail_plan(sid, *, cfg, lib):
+        raise ValueError("尚未生成实验知识（experiment.json）：先运行 pa analyze 或「一键处理」")
+
+    monkeypatch.setattr(rt, "generate_repro_plan", fail_plan)
+    assert client.post("/api/papers/openalex:W1/plan").status_code == 400

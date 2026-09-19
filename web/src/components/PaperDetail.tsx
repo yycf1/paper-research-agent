@@ -3,7 +3,7 @@ import { api, pollJob, type ExperimentSchema, type Job, type PaperDetail } from 
 import Markdown from "../md";
 import { statusLabel } from "../labels";
 
-type Tab = "report" | "experiment" | "fulltext" | "abstract";
+type Tab = "report" | "experiment" | "plan" | "fulltext" | "abstract";
 
 export default function PaperDetail({
   id,
@@ -18,6 +18,7 @@ export default function PaperDetail({
   const [tab, setTab] = useState<Tab>("report");
   const [err, setErr] = useState("");
   const [job, setJob] = useState<Job | null>(null);
+  const [planning, setPlanning] = useState(false);
 
   const load = () =>
     api.paper(id).then(setPaper).catch((e) => setErr(String(e)));
@@ -26,6 +27,19 @@ export default function PaperDetail({
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  const makePlan = async () => {
+    setErr("");
+    setPlanning(true);
+    try {
+      await api.plan(id);
+      await load();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setPlanning(false);
+    }
+  };
 
   const process = async () => {
     setErr("");
@@ -49,6 +63,7 @@ export default function PaperDetail({
   const tabs = ([
     { k: "report", label: "精读报告", show: !!paper.report?.trim() },
     { k: "experiment", label: "实验结构", show: !!exp },
+    { k: "plan", label: "复现方案", show: !!paper.repro_plan?.trim() },
     { k: "fulltext", label: "全文", show: !!paper.full_text },
     { k: "abstract", label: "摘要", show: !!paper.abstract },
   ] as { k: Tab; label: string; show: boolean }[]).filter((t) => t.show);
@@ -75,7 +90,16 @@ export default function PaperDetail({
         <h2>{paper.title}</h2>
         <div style={{ display: "flex", gap: 8, whiteSpace: "nowrap", height: 36 }}>
           <button className="danger" onClick={doDelete}>删除</button>
-          <button className="primary" style={{ height: "100%" }} onClick={process} disabled={processing}>
+          <button
+            className="primary"
+            style={{ height: "100%" }}
+            onClick={makePlan}
+            disabled={planning || processing || !paper.experiment}
+            title={paper.experiment ? "依据实验知识生成复现方案（repro_plan.md）" : "需要先完成知识提取（experiment.json）"}
+          >
+            {planning ? "规划中…" : paper.repro_plan ? "重新规划" : "生成复现方案"}
+          </button>
+          <button className="primary" style={{ height: "100%" }} onClick={process} disabled={processing || planning}>
             {processing ? "处理中…" : "一键处理"}
           </button>
         </div>
@@ -129,6 +153,7 @@ export default function PaperDetail({
             ))}
           </div>
           {active === "report" && <div className="section-block"><Markdown className="body-md" text={paper.report ?? ""} /></div>}
+          {active === "plan" && <div className="section-block"><Markdown className="body-md" text={paper.repro_plan ?? ""} /></div>}
           {active === "abstract" && <div className="section-block"><div className="body">{paper.abstract}</div></div>}
           {active === "fulltext" && (
             <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>

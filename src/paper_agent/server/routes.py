@@ -22,6 +22,7 @@ from paper_agent.rag.vectorstore import VectorStore
 from paper_agent.services.assistant import handle_message, suggest_directions
 from paper_agent.services.library_ops import UnsupportedFormat, delete_paper, import_local_file
 from paper_agent.services.process import process_paper
+from paper_agent.services.repro import generate_repro_plan
 from paper_agent.services.search import PreviewResult, ingest_papers, search_sources
 from paper_agent.server import jobs
 
@@ -158,6 +159,7 @@ def api_paper_detail(sid: str, lib: Library = Depends(open_lib)) -> dict:
     knowledge = paths.knowledge_dir(cfg) / safe_dirname(rec.paper.source_id)
     experiment_path = knowledge / "experiment.json"
     report_path = knowledge / "report.md"
+    repro_plan_path = knowledge / "repro_plan.md"
     fulltext_path = paths.parsed_dir(cfg) / safe_dirname(rec.paper.source_id) / "full_text.md"
     out["experiment"] = (
         json.loads(experiment_path.read_text(encoding="utf-8"))
@@ -165,6 +167,9 @@ def api_paper_detail(sid: str, lib: Library = Depends(open_lib)) -> dict:
     )
     out["report"] = (
         report_path.read_text(encoding="utf-8") if report_path.exists() else None
+    )
+    out["repro_plan"] = (
+        repro_plan_path.read_text(encoding="utf-8") if repro_plan_path.exists() else None
     )
     out["full_text"] = (
         fulltext_path.read_text(encoding="utf-8") if fulltext_path.exists() else None
@@ -254,6 +259,31 @@ def api_ingest(req: IngestRequest, lib: Library = Depends(open_lib)) -> dict:
         "ingested": len(result.new_papers),
         "duplicates": result.duplicates,
         "papers": [record_to_dict(r) for r in result.new_papers],
+    }
+
+
+@router.post("/papers/{sid}/plan")
+def api_plan_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
+    """生成复现方案（repro_plan.md）：须已分析；同步调用，LLM 通常 10~40s。"""
+    if lib.get(sid) is None:
+        matches = lib.find(sid)
+        if len(matches) == 1:
+            sid = matches[0]
+        elif len(matches) > 1:
+            raise HTTPException(400, f"「{sid}」匹配多条：{', '.join(matches)}")
+        else:
+            raise HTTPException(404, f"未找到论文：{sid}")
+    cfg = load_config()
+    try:
+        plan, usage = generate_repro_plan(sid, cfg=cfg, lib=lib)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:  # 空回复 / 缺 Key
+        raise HTTPException(503, str(exc)) from exc
+    return {
+        "source_id": sid,
+        "repro_plan": plan,
+        "tokens": usage.get("prompt", 0) + usage.get("completion", 0),
     }
 
 
