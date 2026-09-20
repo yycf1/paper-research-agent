@@ -131,27 +131,65 @@ def api_papers(
 
 @router.get("/tags")
 def api_tags(lib: Library = Depends(open_lib)) -> dict:
-    """分组标签 → 数量，外加按数据源的统计与未分组数量（分组导航用）。"""
+    """分组列表（含主动创建的空分组）→ [{name, count}]，外加数据源统计与未分组数量。"""
     by_source: dict[str, int] = {}
     untagged = 0
     for r in lib.list():
         by_source[r.paper.source] = by_source.get(r.paper.source, 0) + 1
         if not r.tag:
             untagged += 1
-    return {"tags": lib.tags(), "sources": by_source, "untagged": untagged}
+    return {"tags": lib.groups(), "sources": by_source, "untagged": untagged}
+
+
+class TagCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+@router.post("/tags", status_code=201)
+def api_create_tag(req: TagCreate, lib: Library = Depends(open_lib)) -> dict:
+    """主动创建空分组（先建组、后归类的用法）。已存在返回 409。"""
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(400, "分组名不能为空")
+    if not lib.create_group(name):
+        raise HTTPException(409, f"分组已存在：{name}")
+    return {"name": name, "count": 0}
+
+
+class TagRename(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+@router.patch("/tags/{name}")
+def api_rename_tag(name: str, req: TagRename, lib: Library = Depends(open_lib)) -> dict:
+    """重命名分组，组内论文标签同步更新。"""
+    new_name = req.name.strip()
+    names = {g["name"] for g in lib.groups()}
+    if name not in names:
+        raise HTTPException(404, f"分组不存在：{name}")
+    if new_name == name:
+        count = next(g["count"] for g in lib.groups() if g["name"] == name)
+        return {"name": name, "count": count}
+    if new_name in names:
+        raise HTTPException(409, f"目标分组已存在：{new_name}")
+    moved = lib.rename_group(name, new_name)
+    return {"name": new_name, "count": moved}
+
+
+@router.delete("/tags/{name}")
+def api_delete_tag(name: str, lib: Library = Depends(open_lib)) -> dict:
+    """删除分组：组内论文全部回到「未分组」（论文本身不删）。"""
+    if name not in {g["name"] for g in lib.groups()}:
+        raise HTTPException(404, f"分组不存在：{name}")
+    moved = lib.delete_group(name)
+    return {"ok": True, "ungrouped": moved}
 
 
 @router.get("/papers/{sid}")
 def api_paper_detail(sid: str, lib: Library = Depends(open_lib)) -> dict:
+    sid = _resolve_sid(sid, lib)  # 允许片段匹配（与 CLI 一致的容错），歧义 400
     rec = lib.get(sid)
-    if rec is None:  # 允许片段匹配（与 CLI 一致的容错），歧义时报 400
-        matches = lib.find(sid)
-        if len(matches) == 1:
-            rec = lib.get(matches[0])
-        elif len(matches) > 1:
-            raise HTTPException(400, f"「{sid}」匹配多条：{', '.join(matches)}")
-    if rec is None:
-        raise HTTPException(404, f"未找到论文：{sid}")
+    assert rec is not None
 
     cfg = load_config()
     out = record_to_dict(rec, with_abstract=True)
@@ -188,6 +226,13 @@ class SearchRequest(BaseModel):
     max_results: int = Field(10, ge=1, le=50)
     year_from: int | None = Field(None, ge=1900, le=2100)
     raw: bool = False
+    # 高级检索条件（M13）
+    field: str = Field("all", pattern="^(all|title|abstract)$")
+    author: str = Field("", max_length=120)
+    sort: str = Field("relevance", pattern="^(relevance|citations|newest)$")
+    min_citations: int | None = Field(None, ge=0)
+    oa_only: bool = False
+    year_to: int | None = Field(None, ge=1900, le=2100)
 
 
 @router.post("/search")
@@ -198,6 +243,8 @@ def api_search(req: SearchRequest, lib: Library = Depends(open_lib)) -> dict:
         preview = search_sources(
             req.query, lib=lib, cfg=cfg, sources=req.sources,
             max_results=req.max_results, year_from=req.year_from, raw=req.raw,
+            field=req.field, author=req.author or None, sort=req.sort,
+            min_citations=req.min_citations, oa_only=req.oa_only, year_to=req.year_to,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -262,17 +309,48 @@ def api_ingest(req: IngestRequest, lib: Library = Depends(open_lib)) -> dict:
     }
 
 
+class PaperTagUpdate(BaseModel):
+    tag: str | None = Field(None, max_length=60)
+
+
+def _resolve_sid(sid: str, lib: Library) -> str:
+    """id 片段解析（与详情/删除一致）：唯一匹配返回全 id，歧义 400，无匹配 404。"""
+    if lib.get(sid) is not None:
+        return sid
+    matches = lib.find(sid)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise HTTPException(400, f"「{sid}」匹配多条：{', '.join(matches)}")
+    raise HTTPException(404, f"未找到论文：{sid}")
+
+
+@router.patch("/papers/{sid}")
+def api_set_paper_tag(sid: str, req: PaperTagUpdate, lib: Library = Depends(open_lib)) -> dict:
+    """主动归类：设置/清除单篇论文分组（tag 为 null 或空串清除）。"""
+    sid = _resolve_sid(sid, lib)
+    lib.set_tag(sid, req.tag)
+    rec = lib.get(sid)
+    assert rec is not None
+    return record_to_dict(rec, with_abstract=True)
+
+
+class BatchTagRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=1, max_length=200)
+    tag: str | None = Field(None, max_length=60)
+
+
+@router.post("/papers/batch-tag")
+def api_batch_tag(req: BatchTagRequest, lib: Library = Depends(open_lib)) -> dict:
+    """批量归类/移出分组（列表多选操作）。"""
+    out = lib.set_tag_many(req.source_ids, req.tag)
+    return {"updated": out["updated"], "missing": out["missing"], "tag": (req.tag or "").strip()}
+
+
 @router.post("/papers/{sid}/plan")
 def api_plan_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
     """生成复现方案（repro_plan.md）：须已分析；同步调用，LLM 通常 10~40s。"""
-    if lib.get(sid) is None:
-        matches = lib.find(sid)
-        if len(matches) == 1:
-            sid = matches[0]
-        elif len(matches) > 1:
-            raise HTTPException(400, f"「{sid}」匹配多条：{', '.join(matches)}")
-        else:
-            raise HTTPException(404, f"未找到论文：{sid}")
+    sid = _resolve_sid(sid, lib)
     cfg = load_config()
     try:
         plan, usage = generate_repro_plan(sid, cfg=cfg, lib=lib)
@@ -290,14 +368,7 @@ def api_plan_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
 @router.delete("/papers/{sid}")
 def api_delete_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
     """全链删除：账本 + 向量块 + 原文/解析/知识产物。"""
-    if lib.get(sid) is None:
-        matches = lib.find(sid)
-        if len(matches) == 1:
-            sid = matches[0]
-        elif len(matches) > 1:
-            raise HTTPException(400, f"「{sid}」匹配多条：{', '.join(matches)}")
-        else:
-            raise HTTPException(404, f"未找到论文：{sid}")
+    sid = _resolve_sid(sid, lib)
     ok = delete_paper(sid, cfg=load_config(), lib=lib)
     return {"ok": ok, "source_id": sid}
 

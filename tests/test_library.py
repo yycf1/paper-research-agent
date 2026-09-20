@@ -84,3 +84,93 @@ def test_find_fragment(tmp_path):
     lib.upsert_paper(make_paper("openalex:W2741809807", "A"))
     assert lib.find("W2741809807") == ["openalex:W2741809807"]
     assert lib.find("不存在") == []
+
+
+# ---------------------------------------------------------------------------
+# 分组管理（M13）：主动建组、归类、重命名、删除
+# ---------------------------------------------------------------------------
+
+
+def test_create_group_and_groups_listing(tmp_path):
+    lib = make_lib(tmp_path)
+    assert lib.create_group("知识图谱调研") is True
+    assert lib.create_group("知识图谱调研") is False  # 幂等
+    # 空分组也在列，计数为 0
+    assert lib.groups() == [{"name": "知识图谱调研", "count": 0}]
+    try:
+        lib.create_group("   ")
+        raise AssertionError("空名应当抛 ValueError")
+    except ValueError:
+        pass
+
+
+def test_seed_groups_from_existing_paper_tags(tmp_path):
+    """老库升级：已有论文标签自动登记进 groups 表（迁移幂等）。"""
+    lib = make_lib(tmp_path)
+    lib.upsert_paper(make_paper("openalex:W1", "A"), tag="检索主题X")
+    lib.upsert_paper(make_paper("openalex:W2", "B"), tag="检索主题X")
+    lib.upsert_paper(make_paper("openalex:W3", "C"), tag="本地上传")
+    groups = {g["name"]: g["count"] for g in lib.groups()}
+    assert groups == {"检索主题X": 2, "本地上传": 1}
+
+
+def test_set_tag_assign_and_clear(tmp_path):
+    lib = make_lib(tmp_path)
+    lib.upsert_paper(make_paper("openalex:W1", "A"))
+    lib.set_tag("openalex:W1", "综述")
+    assert lib.get("openalex:W1").tag == "综述"
+    # 归类时自动登记分组
+    assert [g["name"] for g in lib.groups()] == ["综述"]
+    lib.set_tag("openalex:W1", None)
+    assert lib.get("openalex:W1").tag == ""
+    # 空分组保留（主动创建的组不因移出而消失）
+    assert [g["name"] for g in lib.groups()] == ["综述"]
+    try:
+        lib.set_tag("openalex:NOPE", "x")
+        raise AssertionError("不存在的论文应当抛 ValueError")
+    except ValueError:
+        pass
+
+
+def test_rename_group_updates_papers(tmp_path):
+    lib = make_lib(tmp_path)
+    lib.upsert_paper(make_paper("openalex:W1", "A"), tag="旧名")
+    lib.upsert_paper(make_paper("openalex:W2", "B"), tag="旧名")
+    moved = lib.rename_group("旧名", "新名")
+    assert moved == 2
+    assert lib.get("openalex:W1").tag == "新名"
+    assert lib.get("openalex:W2").tag == "新名"
+    assert [g["name"] for g in lib.groups()] == ["新名"]
+    try:
+        lib.rename_group("不存在", "x")
+        raise AssertionError("应当抛 ValueError")
+    except ValueError:
+        pass
+    lib.create_group("占用")
+    try:
+        lib.rename_group("新名", "占用")
+        raise AssertionError("目标已存在应当抛 ValueError")
+    except ValueError:
+        pass
+
+
+def test_delete_group_keeps_papers(tmp_path):
+    lib = make_lib(tmp_path)
+    lib.upsert_paper(make_paper("openalex:W1", "A"), tag="临时组")
+    assert lib.delete_group("临时组") == 1
+    assert lib.get("openalex:W1") is not None  # 论文保留
+    assert lib.get("openalex:W1").tag == ""  # 回到未分组
+    assert lib.groups() == []
+    assert lib.delete_group("不存在") == 0
+
+
+def test_set_tag_many_batch(tmp_path):
+    lib = make_lib(tmp_path)
+    lib.upsert_paper(make_paper("openalex:W1", "A"))
+    lib.upsert_paper(make_paper("openalex:W2", "B"))
+    out = lib.set_tag_many(["openalex:W1", "openalex:W2", "openalex:NOPE"], "批量组")
+    assert out == {"updated": 2, "missing": ["openalex:NOPE"]}
+    assert lib.get("openalex:W2").tag == "批量组"
+    out = lib.set_tag_many(["openalex:W1", "openalex:W2"], None)
+    assert out["updated"] == 2
+    assert lib.get("openalex:W1").tag == ""

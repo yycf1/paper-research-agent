@@ -81,8 +81,18 @@ def search_source_tool(
     year_from: int | None = None,
     proxy: str = "",
     email: str = "",
+    field: str = "all",
+    author: str | None = None,
+    sort: str = "relevance",
+    year_to: int | None = None,
+    oa_only: bool = False,
 ) -> ToolResult:
-    """在单个数据源上检索论文。degraded = 该源本次不可用（跳过，不阻塞其它源）。"""
+    """在单个数据源上检索论文。degraded = 该源本次不可用（跳过，不阻塞其它源）。
+
+    高级检索条件（M13）经统一契约透传：field（all/title/abstract）、author、
+    sort（relevance/citations/newest）、year_to、oa_only；各源按自身能力映射，
+    不支持的条件由服务层后过滤兜底（如 arXiv 无引用数据）。
+    """
     if source_name not in SOURCE_MODULES:
         return ToolResult(tool="search_papers", status="fatal",
                           error=f"未知数据源：{source_name}")
@@ -93,8 +103,14 @@ def search_source_tool(
     def _run() -> list[Paper]:
         module = SOURCE_MODULES[source_name]
         if source_name == "openalex":
-            return module.search(query, max_results, year_from, proxy=proxy, email=email)
-        return module.search(query, max_results, year_from, proxy=proxy)
+            return module.search(
+                query, max_results, year_from, proxy=proxy, email=email,
+                field=field, author=author, sort=sort, year_to=year_to,
+            )
+        return module.search(
+            query, max_results, year_from, proxy=proxy,
+            field=field, author=author, sort=sort, year_to=year_to, oa_only=oa_only,
+        )
 
     result = run_tool("search_papers", _run)
     result.meta["source"] = source_name
@@ -149,6 +165,13 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
                 "max_results": {"type": "integer", "minimum": 1, "maximum": 50,
                                 "description": "每源返回条数上限"},
                 "year_from": {"type": "integer", "description": "只保留该年份及以后"},
+                "year_to": {"type": "integer", "description": "只保留该年份及以前"},
+                "field": {"type": "string", "enum": ["all", "title", "abstract"],
+                          "description": "关键词匹配范围：全部 / 仅标题 / 仅摘要"},
+                "author": {"type": "string", "description": "按作者过滤（模糊匹配）"},
+                "sort": {"type": "string", "enum": ["relevance", "citations", "newest"],
+                         "description": "排序：相关度 / 引用数 / 最新"},
+                "oa_only": {"type": "boolean", "description": "只保留有全文可下载的结果"},
             },
             "required": ["query"],
         },

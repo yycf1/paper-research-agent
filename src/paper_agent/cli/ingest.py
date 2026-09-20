@@ -42,6 +42,16 @@ def search(
     ),
     max: int = typer.Option(10, "--max", "-m", min=1, help="每源返回条数上限"),
     year_from: int | None = typer.Option(None, "--year-from", help="只保留该年份及以后"),
+    year_to: int | None = typer.Option(None, "--year-to", help="只保留该年份及以前"),
+    field: str = typer.Option(
+        "all", "--in", help="关键词匹配范围：all / title / abstract"
+    ),
+    author: str = typer.Option("", "--author", help="按作者过滤（模糊匹配）"),
+    sort_key: str = typer.Option(
+        "relevance", "--sort", help="排序：relevance / citations / newest"
+    ),
+    min_citations: int | None = typer.Option(None, "--min-citations", min=0, help="最低被引数"),
+    oa_only: bool = typer.Option(False, "--oa", help="只保留有全文可下载的结果"),
     raw: bool = typer.Option(False, "--raw", help="跳过查询优化，原样直搜"),
     ingest: bool = typer.Option(False, "--ingest", help="全部候选直接入库（旧的全自动行为）"),
     pick: str = typer.Option(
@@ -52,6 +62,7 @@ def search(
     """检索论文：默认预览不写库（机器找，人挑选）；--ingest 全收，--pick 选收。
 
     默认先用 LLM 优化查询（中译英、缩写展开、复合需求拆子查询），失败自动降级原样直搜。
+    高级条件（--in/--author/--sort/--min-citations/--oa/--year-to）作用于全部数据源。
     """
     cfg = load_config()
     lib = _library(cfg)
@@ -60,6 +71,8 @@ def search(
             preview = search_sources(
                 query, lib=lib, cfg=cfg, sources=source,
                 max_results=max, year_from=year_from, raw=raw,
+                field=field, author=author or None, sort=sort_key,
+                min_citations=min_citations, oa_only=oa_only, year_to=year_to,
             )
         except ValueError as exc:
             console.print(f"{FAIL} {exc}")
@@ -235,6 +248,39 @@ def add(
                 continue
             mark = "新导入" if is_new else "已存在（幂等合并）"
             console.print(f"{OK} [dim]{rec.paper.source_id}[/dim] {rec.paper.title}——{mark}，状态 {rec.status}")
+    finally:
+        lib.close()
+
+
+@app.command()
+def tag(
+    ids: list[str] = typer.Argument(..., help="论文 id 片段（可多个）"),
+    set_name: str = typer.Option("", "--set", help="把论文归入该分组（组不存在则自动创建）"),
+    clear: bool = typer.Option(False, "--clear", help="移出分组（回到未分组）"),
+) -> None:
+    """主动归类：把论文移入/移出分组（Web 界面的分组管理与此等价）。"""
+    if not set_name and not clear:
+        console.print(f"{FAIL} 需要 --set <分组名> 或 --clear（二选一）")
+        raise typer.Exit(code=1) from None
+    if set_name and clear:
+        console.print(f"{FAIL} --set 与 --clear 只能二选一")
+        raise typer.Exit(code=1) from None
+    cfg = load_config()
+    lib = _library(cfg)
+    try:
+        targets = _resolve(lib, ids)
+        if not targets:
+            console.print("没有匹配的论文。")
+            return
+        new_tag = None if clear else set_name.strip()
+        ok = 0
+        for rec in targets:
+            sid = rec.paper.source_id
+            lib.set_tag(sid, new_tag)
+            mark = f"→ 分组「{new_tag}」" if new_tag else "→ 已移出分组"
+            console.print(f"{OK} [dim]{sid}[/dim] {rec.paper.title[:36]}… {mark}")
+            ok += 1
+        console.print(f"\n归类完成：{ok} 篇。")
     finally:
         lib.close()
 

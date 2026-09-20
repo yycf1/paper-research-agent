@@ -19,14 +19,36 @@ export default function PaperDetail({
   const [err, setErr] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [groups, setGroups] = useState<{ name: string; count: number }[]>([]);
 
   const load = () =>
     api.paper(id).then(setPaper).catch((e) => setErr(String(e)));
 
   useEffect(() => {
     load();
+    api.tags().then((t) => setGroups(t.tags)).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  const changeTag = async (tag: string) => {
+    const target = tag === "__none__" ? null : tag;
+    setErr("");
+    try {
+      if (target === "__new__") {
+        const typed = window.prompt("新分组名称：");
+        if (!typed || !typed.trim()) return;
+        await api.createTag(typed.trim());
+        await api.setPaperTag(id, typed.trim());
+      } else {
+        await api.setPaperTag(id, target);
+      }
+      await load();
+      api.tags().then((t) => setGroups(t.tags)).catch(() => {});
+      onChanged();
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
 
   const makePlan = async () => {
     setErr("");
@@ -107,7 +129,18 @@ export default function PaperDetail({
       <div className="meta-row">
         <span className={`tag status-${paper.status}`}>{statusLabel(paper.status)}</span>
         <span>{paper.source}</span>
-        {paper.tag && <span className="tag">分组：{paper.tag}</span>}
+        <select
+          value={paper.tag || "__none__"}
+          onChange={(e) => changeTag(e.target.value)}
+          style={{ height: 26, fontSize: 12 }}
+          title="移动到其它分组"
+        >
+          <option value="__none__">未分组</option>
+          {groups.map((g) => (
+            <option key={g.name} value={g.name}>分组：{g.name}</option>
+          ))}
+          <option value="__new__">＋ 新建分组…</option>
+        </select>
         {paper.year && <span>{paper.year} 年</span>}
         {paper.citations != null && <span>被引 {paper.citations}</span>}
         {paper.doi && <span>DOI: {paper.doi}</span>}

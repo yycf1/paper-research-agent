@@ -76,17 +76,45 @@ def parse_atom(text: str) -> list[Paper]:
     return papers
 
 
+def build_search_query(
+    query: str,
+    year_from: int | None = None,
+    *,
+    field: str = "all",
+    author: str | None = None,
+    year_to: int | None = None,
+) -> str:
+    """构造 arXiv 检索式（纯函数，离线可测）。字段限定映射官方前缀 ti:/abs:/au:。"""
+    prefix = {"all": "all", "title": "ti", "abstract": "abs"}.get(field, "all")
+    q = f'{prefix}:"{query}"' if " " in query else f"{prefix}:{query}"
+    if author:
+        author = re.sub(r"""["()\\]""", " ", author).strip()
+        q += f' AND au:"{author}"'
+    if year_from or year_to:
+        lo = year_from or 1900
+        hi = year_to or 2099
+        q += f" AND submittedDate:[{lo}01010000 TO {hi}12312359]"
+    return q
+
+
 def search(
     query: str,
     max_results: int = 10,
     year_from: int | None = None,
     *,
     proxy: str = "",
+    field: str = "all",
+    author: str | None = None,
+    sort: str = "relevance",
+    year_to: int | None = None,
+    oa_only: bool = False,
 ) -> list[Paper]:
-    search_query = f'all:"{query}"' if " " in query else f"all:{query}"
-    if year_from:
-        search_query += f" AND submittedDate:[{year_from}01010000 TO 209912312359]"
-    params = {"search_query": search_query, "max_results": max_results, "sortBy": "relevance"}
+    search_query = build_search_query(
+        query, year_from, field=field, author=author, year_to=year_to
+    )
+    # arXiv 无引用数据：citations 排序退化为相关度；oa_only 无索引字段，由服务层后过滤兜底
+    sort_by = "submittedDate" if sort == "newest" else "relevance"
+    params = {"search_query": search_query, "max_results": max_results, "sortBy": sort_by}
     _throttle()
     resp = http_get(_API, params=params, proxy=proxy, timeout=(10, 60))
     if resp.status_code != 200:

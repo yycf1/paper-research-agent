@@ -38,7 +38,7 @@ def test_search_and_ingest_fallback_to_raw_query(tmp_path, monkeypatch):
         )
         calls: list[str] = []
 
-        def fake_tool(name, *, query, max_results, year_from=None, proxy="", email=""):
+        def fake_tool(name, *, query, max_results, year_from=None, proxy="", email="", **_):
             calls.append(query)
             if query.endswith("survey"):
                 return _ok([])  # 优化词无结果
@@ -97,7 +97,7 @@ def test_search_and_ingest_degraded_source_noted(tmp_path, monkeypatch):
             lambda q: {"topics": [q], "year_from": None, "max_results": None, "optimized": False},
         )
 
-        def fake_tool(name, *, query, max_results, year_from=None, proxy="", email=""):
+        def fake_tool(name, *, query, max_results, year_from=None, proxy="", email="", **_):
             if name == "openalex":
                 return ToolResult(tool="search_papers", status="degraded", error="连接被重置")
             return _ok([_paper("europepmc:P1", "Bio Paper")])

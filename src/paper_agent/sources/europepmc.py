@@ -53,25 +53,67 @@ def parse_response(data: dict) -> list[Paper]:
     return [p for p in (parse_hit(h) for h in hits) if p.title]
 
 
+def build_query(
+    query: str,
+    year_from: int | None = None,
+    *,
+    field: str = "all",
+    author: str | None = None,
+    year_to: int | None = None,
+    oa_only: bool = False,
+) -> str:
+    """构造 Europe PMC 查询串（纯函数，离线可测）。
+
+    字段限定用其官方查询语法：TITLE:"…" / ABSTRACT:"…"；作者 AUTH:"…"；
+    OA 过滤 OPEN_ACCESS:Y。保留字符清理照旧，防止用户输入改变语义。
+    """
+    clean = lambda text: re.sub(r"""["^\[\]{}()~*?:\\]""", " ", text).strip()  # noqa: E731
+    q = clean(query)
+    if field == "title":
+        q = f'TITLE:"{q}"'
+    elif field == "abstract":
+        q = f'ABSTRACT:"{q}"'
+    clauses = [f"({q})"]
+    if author:
+        clauses.append(f'(AUTH:"{clean(author)}")')
+    lo = year_from or 1900
+    hi = year_to or 2099
+    if year_from or year_to:
+        clauses.append(f"(PUB_YEAR:[{lo} TO {hi}])")
+    if oa_only:
+        clauses.append("(OPEN_ACCESS:Y)")
+    return " AND ".join(clauses)
+
+
+def build_params(query: str, max_results: int, *, sort: str = "relevance") -> dict:
+    """构造请求参数（纯函数，离线可测）。sort：relevance（默认）/ citations / newest。"""
+    params: dict = {"query": query, "format": "json", "pageSize": max_results,
+                    "resultType": "core"}
+    if sort == "citations":
+        params["sort"] = "CITED desc"
+    elif sort == "newest":
+        params["sort"] = "P_PDATE_D desc"
+    return params
+
+
 def search(
     query: str,
     max_results: int = 10,
     year_from: int | None = None,
     *,
     proxy: str = "",
+    field: str = "all",
+    author: str | None = None,
+    sort: str = "relevance",
+    year_to: int | None = None,
+    oa_only: bool = False,
 ) -> list[Paper]:
-    # 清理 Europe PMC 查询语法的保留字符，防止用户输入改变语义
-    safe_query = re.sub(r"""["^\[\]{}()~*?:\\]""", " ", query).strip()
-    if year_from:
-        safe_query = f"({safe_query}) AND (PUB_YEAR:[{year_from} TO 2099])"
-    started = time.perf_counter()
-    resp = http_get(
-        _API,
-        params={"query": safe_query, "format": "json", "pageSize": max_results,
-                "resultType": "core"},
-        proxy=proxy,
-        timeout=(10, 60),
+    safe_query = build_query(
+        query, year_from, field=field, author=author, year_to=year_to, oa_only=oa_only
     )
+    params = build_params(safe_query, max_results, sort=sort)
+    started = time.perf_counter()
+    resp = http_get(_API, params=params, proxy=proxy, timeout=(10, 60))
     _ = started
     if resp.status_code != 200:
         raise SourceUnavailable(f"Europe PMC HTTP {resp.status_code}: {resp.text[:120]}")

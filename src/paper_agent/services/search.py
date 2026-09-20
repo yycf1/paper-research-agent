@@ -61,8 +61,27 @@ def search_sources(
     max_results: int = 10,
     year_from: int | None = None,
     raw: bool = False,
+    field: str = "all",
+    author: str | None = None,
+    sort: str = "relevance",
+    min_citations: int | None = None,
+    oa_only: bool = False,
+    year_to: int | None = None,
 ) -> PreviewResult:
-    """执行多源检索与校验，对照账本标记重复；不写库。未知数据源抛 ValueError。"""
+    """执行多源检索与校验，对照账本标记重复；不写库。未知数据源抛 ValueError。
+
+    高级检索条件（M13）：field/author/sort/year_to 透传各源；min_citations 与
+    oa_only 为跨源统一语义的后过滤（引用数未知按 0 计、全文以 pdf_urls 非空为准），
+    不依赖单源能力，保证「同一条件在所有源上含义一致」。
+    """
+    if field not in ("all", "title", "abstract"):
+        raise ValueError(f"非法匹配范围：{field}（all/title/abstract）")
+    if sort not in ("relevance", "citations", "newest"):
+        raise ValueError(f"非法排序：{sort}（relevance/citations/newest）")
+    if min_citations is not None and min_citations < 0:
+        raise ValueError("最低引用数不能为负")
+    if year_from and year_to and year_from > year_to:
+        raise ValueError(f"年份区间为空：{year_from} > {year_to}")
     if isinstance(sources, str):
         names = [s.strip().lower() for s in sources.split(",")]
     else:
@@ -83,8 +102,36 @@ def search_sources(
     eff_max = plan.get("max_results") or max_results
 
     result = PreviewResult(plan=plan)
+    active_filters: list[str] = []
+    if author:
+        active_filters.append(f"作者 {author}")
+    if field != "all":
+        active_filters.append({"title": "仅标题", "abstract": "仅摘要"}[field])
+    if min_citations:
+        active_filters.append(f"最低被引 {min_citations}")
+    if oa_only:
+        active_filters.append("仅可下载全文")
+    if year_to:
+        active_filters.append(f"年份 ≤ {year_to}")
+    if active_filters:
+        result.notes.append("过滤条件：" + " · ".join(active_filters))
+    trimmed = 0
+
     seen: dict[str, str] = {}  # 去重键（doi 或归一化标题）→ 本次检索内的代表 id
     rendered: set[str] = set()  # 已渲染候选的代表 id（库内已有条目按其账本 id 计）
+
+    def _post_filter(papers: list[Paper]) -> list[Paper]:
+        """跨源统一后过滤：最低引用数 + 仅全文。返回过滤后的列表。"""
+        nonlocal trimmed
+        if min_citations is None and not oa_only:
+            return papers
+        kept = [
+            p for p in papers
+            if (min_citations is None or (p.citations or 0) >= min_citations)
+            and (not oa_only or bool(p.pdf_urls))
+        ]
+        trimmed += len(papers) - len(kept)
+        return kept
 
     def _search_one(keyword: str) -> int:
         """对单个查询词跑全部源并就地去重，返回各源返回的候选总数。"""
@@ -97,6 +144,8 @@ def search_sources(
             tool_result = search_source_tool(
                 name, query=keyword, max_results=eff_max, year_from=eff_year,
                 proxy=proxy, email=email,
+                field=field, author=author, sort=sort,
+                year_to=year_to, oa_only=oa_only,
             )
             if tool_result.status == "fatal":
                 result.notes.append(f"{name}：{tool_result.error}")
@@ -107,6 +156,7 @@ def search_sources(
                 continue
             papers, issues = filter_valid_papers(tool_result.data)
             result.notes.extend(f"结果校验拦截：{issue}" for issue in issues)
+            papers = _post_filter(papers)
             hits += len(papers)
             result.source_hits[name] = result.source_hits.get(name, 0) + len(papers)
             for p in papers:
@@ -130,6 +180,8 @@ def search_sources(
     if result.total_hits == 0 and plan.get("optimized"):
         result.notes.append("优化后的检索词没有结果，回退原始词重搜")
         result.total_hits = _search_one(query)
+    if trimmed:
+        result.notes.append(f"已按过滤条件剔除 {trimmed} 条不符合的结果")
     return result
 
 
@@ -162,11 +214,19 @@ def search_and_ingest(
     year_from: int | None = None,
     raw: bool = False,
     tag: str | None = None,
+    field: str = "all",
+    author: str | None = None,
+    sort: str = "relevance",
+    min_citations: int | None = None,
+    oa_only: bool = False,
+    year_to: int | None = None,
 ) -> SearchOutcome:
     """全自动模式：检索全部候选并全部入库（CLI `pa search` / 对话助手用）。"""
     preview = search_sources(
         query, lib=lib, cfg=cfg, sources=sources,
         max_results=max_results, year_from=year_from, raw=raw,
+        field=field, author=author, sort=sort,
+        min_citations=min_citations, oa_only=oa_only, year_to=year_to,
     )
     ingest = ingest_papers(
         [c.paper for c in preview.candidates],  # 重复项也传：upsert 幂等合并元数据

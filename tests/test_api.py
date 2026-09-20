@@ -136,7 +136,7 @@ def test_tags_facet(monkeypatch, tmp_path):
     lib.close()
     client = _client(monkeypatch, tmp_path)
     data = client.get("/api/tags").json()
-    assert data["tags"] == {"本地上传": 1}
+    assert data["tags"] == [{"name": "本地上传", "count": 1}]
     assert data["sources"]["openalex"] == 2
     # tag 过滤
     r = client.get("/api/papers", params={"tag": "本地上传"})
@@ -334,3 +334,63 @@ def test_plan_paper_endpoint(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rt, "generate_repro_plan", fail_plan)
     assert client.post("/api/papers/openalex:W1/plan").status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 分组管理（M13）：tags CRUD 与论文归类
+# ---------------------------------------------------------------------------
+
+
+def test_tags_list_includes_empty_groups(monkeypatch, tmp_path):
+    lib = _seed(tmp_path)
+    lib.upsert_paper(_paper("openalex:W3", "Tagged Paper"), tag="检索主题")
+    lib.create_group("空分组")
+    lib.close()
+    client = _client(monkeypatch, tmp_path)
+    data = client.get("/api/tags").json()
+    tags = {t["name"]: t["count"] for t in data["tags"]}
+    assert tags == {"检索主题": 1, "空分组": 0}
+
+
+def test_tag_crud_endpoints(monkeypatch, tmp_path):
+    _seed(tmp_path).close()
+    client = _client(monkeypatch, tmp_path)
+
+    # 创建：201 / 重复 409 / 空名 400
+    assert client.post("/api/tags", json={"name": "新组"}).status_code == 201
+    assert client.post("/api/tags", json={"name": "新组"}).status_code == 409
+    assert client.post("/api/tags", json={"name": "  "}).status_code == 400
+
+    # 重命名：论文标签同步；不存在 404；目标冲突 409
+    client.patch("/api/papers/openalex:W1", json={"tag": "新组"})
+    r = client.patch("/api/tags/新组", json={"name": "改名组"})
+    assert r.status_code == 200
+    assert client.get("/api/papers/openalex:W1").json()["tag"] == "改名组"
+    assert client.patch("/api/tags/不存在", json={"name": "x"}).status_code == 404
+    client.post("/api/tags", json={"name": "另一组"})
+    assert client.patch("/api/tags/改名组", json={"name": "另一组"}).status_code == 409
+
+    # 删除：论文回未分组；不存在 404
+    r = client.delete("/api/tags/改名组")
+    assert r.status_code == 200 and r.json()["ungrouped"] == 1
+    assert client.get("/api/papers/openalex:W1").json()["tag"] == ""
+    assert client.delete("/api/tags/不存在").status_code == 404
+
+
+def test_paper_tag_assign_clear_and_batch(monkeypatch, tmp_path):
+    _seed(tmp_path).close()
+    client = _client(monkeypatch, tmp_path)
+
+    # 单篇归类（自动建组）与清除
+    r = client.patch("/api/papers/openalex:W1", json={"tag": "综述收集"})
+    assert r.status_code == 200 and r.json()["tag"] == "综述收集"
+    assert client.patch("/api/papers/openalex:W1", json={"tag": None}).json()["tag"] == ""
+    assert client.patch("/api/papers/openalex:NOPE", json={"tag": "x"}).status_code == 404
+
+    # 批量归类：missing 原样返回
+    r = client.post("/api/papers/batch-tag",
+                    json={"source_ids": ["openalex:W1", "openalex:W2", "openalex:NOPE"],
+                          "tag": "批量组"})
+    assert r.status_code == 200
+    assert r.json() == {"updated": 2, "missing": ["openalex:NOPE"], "tag": "批量组"}
+    assert client.get("/api/papers/openalex:W2").json()["tag"] == "批量组"

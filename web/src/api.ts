@@ -64,10 +64,28 @@ export interface IngestReply {
   papers: Paper[];
 }
 
+export interface TagWithCount {
+  name: string;
+  count: number;
+}
+
 export interface TagsReply {
-  tags: Record<string, number>;
+  tags: TagWithCount[];
   sources: Record<string, number>;
   untagged: number;
+}
+
+/** 高级检索条件（M13）：全部可选，缺省走后端默认。 */
+export interface SearchOptions {
+  year_from?: number | null;
+  year_to?: number | null;
+  sources?: string[];
+  max_results?: number;
+  field?: "all" | "title" | "abstract";
+  author?: string;
+  sort?: "relevance" | "citations" | "newest";
+  min_citations?: number | null;
+  oa_only?: boolean;
 }
 
 export interface SourceRef {
@@ -162,21 +180,47 @@ export const api = {
   deletePaper: (id: string) =>
     req<{ ok: boolean }>(`/papers/${encodeURIComponent(id)}`, { method: "DELETE" }),
   tags: () => req<TagsReply>("/tags"),
-  search: (
-    query: string,
-    year_from?: number | null,
-    sources: string[] = ["openalex", "europepmc", "arxiv"],
-    max_results = 10,
-  ) =>
-    req<SearchReply>("/search", {
+  createTag: (name: string) =>
+    req<TagWithCount>("/tags", { method: "POST", body: JSON.stringify({ name }) }),
+  renameTag: (oldName: string, name: string) =>
+    req<TagWithCount>(`/tags/${encodeURIComponent(oldName)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteTag: (name: string) =>
+    req<{ ok: boolean; ungrouped: number }>(`/tags/${encodeURIComponent(name)}`, {
+      method: "DELETE",
+    }),
+  setPaperTag: (id: string, tag: string | null) =>
+    req<Paper>(`/papers/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ tag }),
+    }),
+  batchTag: (sourceIds: string[], tag: string | null) =>
+    req<{ updated: number; missing: string[]; tag: string }>("/papers/batch-tag", {
+      method: "POST",
+      body: JSON.stringify({ source_ids: sourceIds, tag }),
+    }),
+  search: (query: string, opts: SearchOptions = {}) => {
+    const {
+      sources = ["openalex", "europepmc", "arxiv"],
+      max_results = 10,
+      ...rest
+    } = opts;
+    return req<SearchReply>("/search", {
       method: "POST",
       body: JSON.stringify({
         query,
-        year_from: year_from ?? undefined,
         sources: sources.join(","),
         max_results,
+        ...rest,
+        year_from: rest.year_from ?? undefined,
+        year_to: rest.year_to ?? undefined,
+        author: rest.author || undefined,
+        min_citations: rest.min_citations ?? undefined,
       }),
-    }),
+    });
+  },
   ingest: (
     papers: { source: string; source_id: string; title: string; abstract?: string }[],
     tag: string,
