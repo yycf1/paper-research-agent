@@ -20,6 +20,14 @@
 | M11 一致性与静默失败修复 | ✅ 完成（空报告防护 + 存量修复、CLI 检索预览式 + pa prune、qa 出处贯通、跨源重复候选去重、Markdown 渲染与差异化产物展示、未分组入口/分页/防抖） |
 | M12 复现规划器（二期第一步） | ✅ 完成（experiment.json + 复现资产 → repro_plan.md：`pa plan` / API / Web「复现方案」页签） |
 | M13 分组自主权与高级检索 | ✅ 完成（主动建组/重命名/删除、多选批量归类、详情页改组；标题/摘要限定、作者过滤、引用数/最新排序、最低被引、仅全文、年份区间） |
+| M14 Function-calling Agent Loop | ✅ 完成（`pa agent`：LLM 自主调用工具的多步循环——检索预览→挑选入库→库内问答，四态错误回填自纠错、步数熔断软着陆，151 个测试全通过） |
+| M15 Agent 护栏硬化与评测体系 | ✅ 完成（循环检测/token 预算/入库上限+HITL 确认/限流自动重试/轨迹存档；检索排序指标 hit@k+MRR+nDCG，agent 任务评测：完成率/工具合规/越界=0/成本） |
+| M16 Agent 上 Web | ✅ 完成（助手页「对话/Agent 任务」双模式：REST API 后台任务 + 步骤轨迹实时轮询 + 浏览器内 HITL 确认门 + Markdown 结果与用量展示） |
+| M17 设置中心 + 文献库 UI 重构 | ✅ 完成（顶栏齿轮弹窗配置模型厂商/Base URL/API Key，覆盖层 `data/settings.json` 保存即生效无需重启、Key 全程脱敏、一键测试连接；文献库信息架构重排为检索区/过滤区/分组行三区，高级筛选网格化，全局视觉打磨零回归） |
+| M18 一键处理透明化 | ✅ 完成（处理链拆为 5 个阶段实时可见：下载/解析/提取实验结构/生成报告/索引，job.result 原地更新流式推进；完成卡/失败卡 + 产物级复用（报告失败重试不重复提取）+ 修复 download_failed 无法重试的存量 bug + DOI 落地页自动跟随 citation_pdf_url 回退；详情页新增「针对本文提问」RAG 问答入口，价值链闭环） |
+| M19 项目定位 + 复现执行器 MVP | ✅ 完成（agent 工具面 5→9：新增跨论文对比 compare_papers 与复现执行三件套 read_repro_plan/write_code/run_code——隔离工作区、文件名白名单、独立进程 5~180s 超时、执行前 HITL 确认；评测集扩到 12 任务实测：完成率/合规率/答案命中 100%、越界 0；repro-01 真机 11 步自纠错：模型按复现方案写 numpy 原型 → 读 stderr 迭代修复 5 轮 → 跑通训练 + 自主设计消融实验验证方法关键模块） |
+| M20 双主题 + 去拥挤 | ✅ 完成（CSS 全量 token 化重写：颜色收敛为语义变量，`data-theme` 一键换肤；深色/浅色双主题进设置页（迷你色板卡片 + 即时预览），localStorage 防首帧闪烁 + settings.json 持久化跨设备跟随；全站间距放宽、状态徽章/表头换行修复） |
+| M21 跨页状态保持 + 整列滚动 | ✅ 完成（文献库/助手双页常驻挂载，切页不卸载组件：Agent 任务时间线与轮询、库页筛选与滚动位置跨页保留，顶栏「助手」执行中小红点呼吸提醒；库页滚动容器上移——检索/过滤/分组区随内容滚走不再常驻占屏，表头 sticky 相对列容器钉住续读，修 border-collapse 下 sticky 表头边框渲染问题） |
 
 ## 快速开始
 
@@ -50,6 +58,7 @@ python -m uv run pa index --all             # 分块 + 向量化 + Chroma 索引
 python -m uv run pa run "图神经网络 推荐"    # 一键流水线：检索→选文→下载→解析→提取→索引（LLM 相关性预筛）
 python -m uv run pa plan <id>               # 复现规划：experiment.json → repro_plan.md（复现链第一步）
 python -m uv run pa ask "论文里用了哪些数据集？"   # 问答（带出处；无参进入多轮 REPL）
+python -m uv run pa agent "找 2 篇 2024 年的 GNN 推荐综述入库"   # Agent 模式：LLM 自主调用工具完成多步任务
 python -m uv run pa chat                    # 自然语言助手（检索/问答/状态/方向引导/域外拒绝）
 python -m uv run pa eval                    # RAG 回归评测（--with-llm 加测答案质量）
 python -m uv run pa status                  # 文献库状态总览
@@ -57,6 +66,83 @@ python -m uv run pa prune --status discovered [--yes]   # 按状态/分组批量
 python -m uv run pa doctor                  # 环境自检（平台 + 数据源）
 python -m uv run pa serve                   # Web 界面 + REST API（http://127.0.0.1:8000）
 ```
+
+## 为什么不是又一个「论文问答 ChatBot」
+
+把一篇 PDF 贴给任意对话 AI 也能总结和问答——所以本项目的价值不在「读一篇」，而在五件对话 AI 做不到的事：
+
+1. **它有记忆**：本地文献库是持续累积的资产（SQLite 账本 + 向量索引 + 知识产物），
+   跨会话、跨周可用；对话 AI 关掉窗口就忘。
+2. **它有手**：接真实学术数据源（OpenAlex/Europe PMC/arXiv）检索、跨源去重、下载真 PDF
+   （含 DOI 落地页自动跟随 citation_pdf_url）、解析、索引——不编造「不存在的参考文献」。
+3. **它能长时自主干活**：function-calling 循环让模型自主编排多步任务，护栏（步数熔断 /
+   token 预算 / 循环检测 / 入库上限 / 代码执行前 HITL 确认）全部代码强制，无人值守可复盘（trace 存档）。
+4. **它可被度量**：检索排序指标（hit@k / MRR / nDCG）+ 12 任务 agent 评测集
+   （完成率 / 工具合规 / 越界操作 / 成本）+「评测 → 轨迹复盘 → 修护栏 → 复测」闭环。
+5. **它能动手验证论文**（M19 复现执行器 MVP）：read_repro_plan → write_code → run_code——
+   agent 在隔离工作区写最小可运行原型、独立进程执行、读 stderr 自纠错重跑，
+   「读 → 答 → 比 → 跑」里对话 AI 完全无法闭环的一环。
+
+Agent 任务模式下这 9 个工具由模型自主编排：search_papers / add_papers /
+ask_library / library_status / explore_directions / compare_papers /
+read_repro_plan / write_code / run_code。
+
+## Agent 模式（function-calling 循环）
+
+`pa chat` 是「路由模式」：LLM 做一次意图分类，之后的分发路径由代码写死。
+`pa agent` 是真正的 **agent loop**：模型看到工具注册表（search_papers /
+add_papers / ask_library / library_status / explore_directions / compare_papers /
+read_repro_plan / write_code / run_code）后自主决定
+调什么、调几轮——先检索预览、看结果再挑选入库、跨论文收集对比证据、按复现方案
+写原型并沙箱执行，多步编排由模型完成，每步工具调用实时打印可观测。
+
+```powershell
+python -m uv run pa agent "看看库里有什么，再找 3 篇 2024 年后的 GNN 推荐综述入库"
+python -m uv run pa agent "库里关于医学影像的论文都用了什么数据集？" --max-steps 12
+```
+
+工程护栏（全部代码强制，config.yaml `agent` 节可调）：
+
+- **步数熔断**：`--max-steps`（默认 8）触顶后禁止工具、强制总结（软着陆）；
+- **token 预算**：每轮调用前检查累计用量（默认 120k），超限软着陆；
+- **循环检测**：同 (工具名, 参数) 签名第 2 次执行时回填警告、第 3 次直接拒绝执行；
+- **入库护栏**：单次超 `add_cap`（20）直接拒绝要求分批；达 `confirm_threshold`（5）
+  触发人工确认（y/N）——`run_code` 代码执行无条件复用同一确认钩子；
+- **复现沙箱**：代码只落 `data/repro/<id>/workspace` 隔离工作区，文件名白名单
+  （纯文件名 + 仅 .py，路径穿越直接拒绝），独立子进程执行、5~180s 超时、输出截断；
+- **限流自动重试**：数据源 429 归类 `retryable_error`，框架按 `retry_after`
+  自动重试一次；其余源故障（degraded）交模型换路；
+- **轨迹存档**：`--trace` 把每步工具调用与结果写 JSONL（`data/traces/`），可复盘。
+
+## 评测体系
+
+```powershell
+python -m uv run pa eval --report     # 检索：hit@k 曲线 + MRR + nDCG@8（26 条问答对）
+python -m uv run pa eval-agent        # Agent：12 任务 × 完成率/工具合规/越界操作/成本
+```
+
+检索排序指标实测（25 条带期望出处的 case）：hit@1 52% ｜ hit@3 76% ｜ hit@5 88% ｜
+hit@8 100% ｜ MRR 0.665 ｜ nDCG@8 0.727——hit@8 满分掩盖了「相关块近半数排不到
+第一」的排序劣化，这正是只看命中率看不见的问题。
+
+Agent 任务评测（`eval/agent_tasks.json`，12 任务）覆盖四类能力面：单工具意图命中、
+多步编排（检索→挑选入库 / 跨论文对比 / 复现执行）、边界行为（域外拒绝不调工具、
+模糊指令澄清、空结果诚实汇报）；指标为任务完成率、工具合规率（越界操作必须为 0）、
+答案关键词命中率、平均步数与 tokens。三轮实测（M15 两轮 + M19 扩容一轮）：
+
+- M15 首轮（10 任务）：完成率 90%，平均 2.5 步 / 6161 tokens——唯一失败源于
+  数据源集体限流时模型盲目换词重搜 8 次（评测轨迹复盘定位）；
+- M15 修复后复测：**完成率 100%，平均 1.9 步 / 5240 tokens**——同样的源故障下
+  模型 2 步即识别「0 结果是故障不是没论文」并诚实汇报；
+- M19 扩容复测（12 任务，含 compare-01 / repro-01）：**完成率 / 合规率 /
+  答案命中 100%，越界 0，平均 2.5 步 / 17538 tokens**（tokens 上升来自 9 工具
+  注册表 + 复现任务本身的重活，如实记录）。repro-01 轨迹：read_repro_plan →
+  write_code/run_code 交替 5 轮自纠错 → 最终 numpy 原型训练收敛（合成数据
+  100%）并自主设计消融实验（去掉 GCN 模块后跌到随机水平）验证方法关键机制；
+- 保留 1 处工具合规 ✗ 的历史记录为判定器口径问题（源全挂时不入库才是正确
+  行为，无条件 must_call 判不了条件合规），如实记录而非掩饰。
+
+这就是本项目的评测工作流：**跑评测 → 轨迹复盘定位失败模式 → 改护栏 → 复测验证**。
 
 ## Web 界面
 
@@ -67,9 +153,18 @@ python -m uv run pa serve                   # Web 界面 + REST API（http://127
   上传本地 PDF/DOCX、分组导航（**主动新建/重命名/删除分组**、列表多选批量归类、详情页下拉改组）、
   状态过滤、「加载更多」分页、
   论文详情（精读报告 / 实验结构含复现资产与置信度 / 复现方案 / 全文）、
-  「一键处理」（下载→解析→知识提取→索引，带步骤进度与失败可见）、单篇删除（连产物全链清理）；
+  「一键处理」**五阶段实时时间线**（下载全文→解析→提取实验结构→生成精读报告→向量索引，
+  每步状态/耗时/失败原因即时可见；失败自动保留已完成产物，重试跳过已完成阶段；
+  完成后可在详情页**针对本文提问**——基于全文知识块的 RAG 问答，带页码出处）、单篇删除（连产物全链清理）；
 - **助手**：自然语言对话（检索 / 问答 / 状态 / 方向引导），问答带可点击出处（含历史会话）；
   对话自动保存为会话（侧栏可新建 / 切换 / 删除），多轮追问带上下文；
+  **Agent 任务模式**：描述目标（如「找 2 篇 2024 年的 GNN 推荐综述入库」），
+  LLM 自主调用工具完成多步任务——每步工具调用实时显示（工具名/参数/四态状态徽章/耗时），
+  批量入库在浏览器内弹确认框（同意/拒绝），结果以 Markdown 渲染并附步数与 token 用量；
+- **设置**（顶栏 ⚙）：**外观主题**（深色/浅色，点选即时生效，保存后跨设备跟随）；
+  配置模型平台——厂商预设（智谱/DeepSeek/Moonshot/通义/OpenAI）或自定义
+  OpenAI 兼容端点，填 Base URL / API Key / 模型名，可一键「测试连接」；Key 只保存在本机
+  `data/settings.json`（gitignore），界面回显仅尾 4 位脱敏；未配 Key 时齿轮亮黄点提醒；
 - 支持深链：`?paper=<id>` 直开论文详情，`?tab=chat&s=<会话id>` 直达某次对话。
 
 前端开发模式：`cd web && npm install && npm run dev`（Vite 端口 5173，/api 自动代理到 8000）；
@@ -88,5 +183,9 @@ API 文档（Swagger）在 <http://127.0.0.1:8000/docs>。
 
 ## 配置说明
 
-- `config.yaml`：平台 base_url / model、无人值守参数（top_n、年份过滤、下载预算）。切换硅基流动 ↔ 智谱只改此文件。
+配置分三层（优先级从低到高）：`config.yaml` 代码默认 → `.env` 本地密钥 →
+`data/settings.json` Web 设置页写入的运行时覆盖（只覆盖 llm 端点三项，保存即生效，无需重启）。
+
+- `config.yaml`：平台 base_url / model、无人值守参数（top_n、年份过滤、下载预算）、
+  agent 护栏（max_steps、token_budget、add_cap、confirm_threshold）。切换硅基流动 ↔ 智谱只改此文件（或在 Web 设置页覆盖）。
 - `.env`：存放 API Key（变量名由各端点的 `api_key_env` 指定）。当前 `llm` 用智谱 `GLM-4.7`（`ZHIPU_API_KEY`），`embedding` 用硅基流动 BGE-M3（`LLM_API_KEY`）；免费档可换回 `GLM-4.7-Flash`。
