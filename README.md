@@ -28,6 +28,7 @@
 | M19 项目定位 + 复现执行器 MVP | ✅ 完成（agent 工具面 5→9：新增跨论文对比 compare_papers 与复现执行三件套 read_repro_plan/write_code/run_code——隔离工作区、文件名白名单、独立进程 5~180s 超时、执行前 HITL 确认；评测集扩到 12 任务实测：完成率/合规率/答案命中 100%、越界 0；repro-01 真机 11 步自纠错：模型按复现方案写 numpy 原型 → 读 stderr 迭代修复 5 轮 → 跑通训练 + 自主设计消融实验验证方法关键模块） |
 | M20 双主题 + 去拥挤 | ✅ 完成（CSS 全量 token 化重写：颜色收敛为语义变量，`data-theme` 一键换肤；深色/浅色双主题进设置页（迷你色板卡片 + 即时预览），localStorage 防首帧闪烁 + settings.json 持久化跨设备跟随；全站间距放宽、状态徽章/表头换行修复） |
 | M21 跨页状态保持 + 整列滚动 | ✅ 完成（文献库/助手双页常驻挂载，切页不卸载组件：Agent 任务时间线与轮询、库页筛选与滚动位置跨页保留，顶栏「助手」执行中小红点呼吸提醒；库页滚动容器上移——检索/过滤/分组区随内容滚走不再常驻占屏，表头 sticky 相对列容器钉住续读，修 border-collapse 下 sticky 表头边框渲染问题） |
+| M22 MCP server | ✅ 完成（`pa mcp` 以 stdio 传输把 9 个工具暴露为 MCP 协议服务——Claude Desktop / Cursor 等 host 开箱接入；schema 直接消费 TOOL_REGISTRY 零二次维护，ToolExecutor 与四态语义/硬护栏原样复用，HITL 确认插座映射为 PAPER_AGENT_CONFIRM 环境变量 + stderr 审计；SDK 内存流协议测试 5 用例 + 真实子进程 stdio 冒烟） |
 
 ## 快速开始
 
@@ -65,6 +66,7 @@ python -m uv run pa status                  # 文献库状态总览
 python -m uv run pa prune --status discovered [--yes]   # 按状态/分组批量清理（全链删除）
 python -m uv run pa doctor                  # 环境自检（平台 + 数据源）
 python -m uv run pa serve                   # Web 界面 + REST API（http://127.0.0.1:8000）
+python -m uv run pa mcp                     # MCP stdio server（Claude Desktop / Cursor 接入）
 ```
 
 ## 为什么不是又一个「论文问答 ChatBot」
@@ -113,6 +115,31 @@ python -m uv run pa agent "库里关于医学影像的论文都用了什么数�
 - **限流自动重试**：数据源 429 归类 `retryable_error`，框架按 `retry_after`
   自动重试一次；其余源故障（degraded）交模型换路；
 - **轨迹存档**：`--trace` 把每步工具调用与结果写 JSONL（`data/traces/`），可复盘。
+
+## MCP 接入（任意 Agent Host 可用）
+
+`pa mcp` 以 stdio 传输启动 MCP server，把 9 个工具暴露给任何 MCP host。
+工具 schema 直接消费 `TOOL_REGISTRY`（单一事实来源），执行复用 `ToolExecutor`
+（四态结果语义与全部硬护栏原样生效）——协议层只做适配，不放宽护栏。
+
+Claude Desktop（`claude_desktop_config.json`）或 Cursor（`mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "paper-agent": {
+      "command": "E:\\path\\to\\.venv\\Scripts\\pa.exe",
+      "args": ["mcp"],
+      "env": { "PAPER_AGENT_CONFIRM": "approve" }
+    }
+  }
+}
+```
+
+- `PAPER_AGENT_CONFIRM`：stdio 场景无可交互前端，HITL 确认插座按此环境变量
+  决断（`approve` 放行 / `reject` 拒绝），每次触发写 stderr 审计日志；
+  `add_cap` 等硬护栏不受影响。接入后在 host 里即可「检索并入库 3 篇 GNN 综述」、
+  「库里医学影像论文都用了什么数据集」——同一个文献库，CLI / Web / MCP 三入口共享。
 
 ## 评测体系
 
