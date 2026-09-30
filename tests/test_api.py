@@ -297,9 +297,10 @@ def test_process_paper_job(monkeypatch, tmp_path):
     _seed(tmp_path).close()
     client = _client(monkeypatch, tmp_path)
 
-    def fake_process(sid, cfg, lib):
+    def fake_process(sid, cfg, lib, *, progress=None):
         return {"source_id": sid, "final_status": "indexed",
-                "steps": [{"stage": "download", "ok": True, "detail": "ok"}]}
+                "stages": [{"stage": "download", "label": "下载全文", "status": "ok",
+                            "detail": "ok", "duration_ms": 12}]}
 
     monkeypatch.setattr(rt, "process_paper", fake_process)
     r = client.post("/api/papers/openalex:W1/process")
@@ -313,6 +314,37 @@ def test_process_paper_job(monkeypatch, tmp_path):
     assert job["status"] == "done"
     assert job["result"]["final_status"] == "indexed"
     assert client.post("/api/papers/openalex:NOPE/process").status_code == 404
+
+
+def test_process_job_streams_stages(monkeypatch, tmp_path):
+    """处理任务的 stages 经 job.result 原地更新，任务运行中轮询即可见（透明化回归）。"""
+    _seed(tmp_path).close()
+    client = _client(monkeypatch, tmp_path)
+
+    def fake_process(sid, cfg, lib, *, progress=None):
+        st = {"stage": "download", "label": "下载全文", "status": "running",
+              "detail": "", "duration_ms": 0}
+        if progress is not None:
+            progress([st])
+        time.sleep(0.4)  # 留出「任务在跑」的窗口供轮询观察
+        st["status"] = "ok"
+        if progress is not None:
+            progress([st])
+        return {"source_id": sid, "final_status": "downloaded", "stages": [st]}
+
+    monkeypatch.setattr(rt, "process_paper", fake_process)
+    job = client.post("/api/papers/openalex:W1/process").json()
+    saw_running = False
+    for _ in range(60):
+        cur = client.get(f"/api/jobs/{job['id']}").json()
+        stages = cur["result"].get("stages") or []
+        if cur["status"] == "running" and stages and stages[0]["status"] == "running":
+            saw_running = True
+            break
+        if cur["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert saw_running, "任务运行中轮询应能看到 running 阶段（旧版只能看到空结果）"
 
 
 def test_plan_paper_endpoint(monkeypatch, tmp_path):

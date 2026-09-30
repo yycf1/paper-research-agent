@@ -1,13 +1,21 @@
-"""单篇全链处理服务：download → parse → analyze → index，按状态断点续跑。
+"""单篇全链处理服务：download → parse → experiment → report → index，按状态断点续跑。
 
 与 pipeline 的批量扫描不同，这里指定一篇论文从当前状态推进到 indexed；
 每一步失败即停并保留 error（前端可重试），语义与 CLI 各命令一致。
+
+M18 重构（处理透明化）：阶段结构化为 stages 列表（含 running/ok/skipped/failed
+与耗时），progress 回调在每次状态变化时被调用——API 层把它接到 job.result 的
+原地更新上，前端轮询立刻可见。旧版把步骤攒在内存里最后一次性返回，两个 LLM
+调用的一两分钟里界面只能转圈。实验结构与精读报告拆为两个独立阶段，且
+experiment.json 支持产物级复用（mtime 比对）：报告失败重试不重复提取结构。
 """
 
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from typing import Callable
 
 from paper_agent import paths
 from paper_agent.download import download_pdf, safe_dirname
@@ -20,22 +28,53 @@ from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import split_markdown
 from paper_agent.rag.vectorstore import VectorStore
 
+STAGE_LABELS = {
+    "download": "下载全文",
+    "parse": "解析文本",
+    "experiment": "提取实验结构",
+    "report": "生成精读报告",
+    "index": "向量索引",
+}
 
-def process_paper(sid: str, cfg: dict, lib: Library) -> dict:
-    """把一篇论文从当前状态推进到 indexed，返回各阶段结果摘要。"""
+
+def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | None = None) -> dict:
+    """把一篇论文从当前状态推进到 indexed，返回阶段记录与最终状态。
+
+    progress(stages) 在每次阶段状态变化时被调用（stages 为完整列表快照，
+    元素含 stage/label/status/detail/duration_ms）；缺省 None 保持静默。
+    """
     rec = lib.get(sid)
     if rec is None:
         raise ValueError(f"未找到论文：{sid}")
-    out: dict = {"source_id": sid, "title": rec.paper.title, "steps": []}
+    out: dict = {"source_id": sid, "title": rec.paper.title, "stages": []}
+    stages = out["stages"]
+    _t0 = 0.0  # 当前阶段起始时刻（阶段顺序执行，单变量即可）
 
-    def _step(name: str, ok: bool, detail: str = "") -> None:
-        out["steps"].append({"stage": name, "ok": ok, "detail": detail})
+    def _notify() -> None:
+        if progress is not None:
+            progress(stages)
 
-    # 1. 下载
+    def _stage(key: str) -> dict:
+        nonlocal _t0
+        _t0 = time.monotonic()
+        st = {"stage": key, "label": STAGE_LABELS[key], "status": "running",
+              "detail": "", "duration_ms": 0}
+        stages.append(st)
+        _notify()
+        return st
+
+    def _end(st: dict, status: str, detail: str = "") -> None:
+        st["status"] = status
+        st["detail"] = detail
+        st["duration_ms"] = int((time.monotonic() - _t0) * 1000)
+        _notify()
+
+    # 1. 下载（download_failed 也重走下载：失败重试是断点续跑的一部分）
     rec = lib.get(sid)
-    if rec is not None and rec.status == "discovered":
+    st = _stage("download")
+    if rec.status in ("discovered", "download_failed"):
         if not rec.paper.pdf_urls:
-            _step("download", False, "无 OA 全文链接（仅摘要），无法处理")
+            _end(st, "failed", "无 OA 全文链接（仅摘要），无法处理")
             out["final_status"] = rec.status
             return out
         try:
@@ -43,65 +82,88 @@ def process_paper(sid: str, cfg: dict, lib: Library) -> dict:
                 rec.paper, paths.papers_dir(cfg), proxy=cfg.get("proxy", "") or ""
             )
             lib.set_status(sid, "downloaded", error=None, pdf_path=str(path))
-            _step("download", True, f"{path.stat().st_size / 1024:.0f} KB")
+            _end(st, "ok", f"{path.stat().st_size / 1024:.0f} KB")
         except Exception as exc:
             lib.set_status(sid, "download_failed", error=str(exc)[:500])
-            _step("download", False, str(exc)[:200])
+            _end(st, "failed", str(exc)[:200])
             out["final_status"] = "download_failed"
             return out
     else:
-        _step("download", True, "已有原文或无需下载")
+        _end(st, "skipped", "已有原文，跳过")
 
     # 2. 解析
     rec = lib.get(sid)
-    if rec is not None and rec.status == "downloaded":
+    st = _stage("parse")
+    if rec.status == "downloaded":
         min_chars = 30 if (rec.pdf_path or "").lower().endswith(".docx") else 200
         try:
             md = extract_markdown(Path(rec.pdf_path))
         except Exception as exc:
             lib.set_status(sid, "downloaded", error=f"解析失败：{exc}"[:500])
-            _step("parse", False, str(exc)[:200])
+            _end(st, "failed", str(exc)[:200])
             out["final_status"] = "downloaded"
             return out
         if len(md.strip()) < min_chars:
             lib.set_status(sid, "downloaded", error="解析结果近乎为空（可能是扫描版 PDF）")
-            _step("parse", False, "解析结果近乎为空")
+            _end(st, "failed", "解析结果近乎为空")
             out["final_status"] = "downloaded"
             return out
         out_md = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
         out_md.parent.mkdir(parents=True, exist_ok=True)
         out_md.write_text(md, encoding="utf-8")
         lib.set_status(sid, "parsed", error=None)
-        _step("parse", True, f"{len(md)} 字符")
+        _end(st, "ok", f"{len(md)} 字符")
     else:
-        _step("parse", True, "已解析")
+        _end(st, "skipped", "已解析")
 
-    # 3. 知识提取
+    # 3+4. 知识提取：实验结构与精读报告拆为两个阶段，各自失败各自停
     rec = lib.get(sid)
-    if rec is not None and rec.status == "parsed":
+    if rec.status == "parsed":
         md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
         markdown = md_path.read_text(encoding="utf-8")
+        out_dir = paths.knowledge_dir(cfg) / safe_dirname(sid)
+
+        st = _stage("experiment")
+        exp_path = out_dir / "experiment.json"
+        if exp_path.exists() and exp_path.stat().st_mtime >= md_path.stat().st_mtime:
+            # 产物级复用：上次结构提取成功而报告失败时，重试不重复花这份 token
+            experiment = json.loads(exp_path.read_text(encoding="utf-8"))
+            _end(st, "skipped", "复用上次提取结果（未过期）")
+        else:
+            try:
+                experiment = extract_experiment(markdown, chat_fn=chat)
+            except Exception as exc:
+                lib.set_status(sid, "parsed", error=f"分析失败：{exc}"[:500])
+                _end(st, "failed", str(exc)[:200])
+                out["final_status"] = "parsed"
+                return out
+            out_dir.mkdir(parents=True, exist_ok=True)
+            exp_path.write_text(
+                json.dumps(experiment, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            _end(st, "ok", "experiment.json")
+
+        st = _stage("report")
         try:
-            experiment = extract_experiment(markdown, chat_fn=chat)
             report, _report_usage = generate_report(markdown, chat_fn=chat)
         except Exception as exc:
             lib.set_status(sid, "parsed", error=f"分析失败：{exc}"[:500])
-            _step("analyze", False, str(exc)[:200])
+            _end(st, "failed", str(exc)[:200])
             out["final_status"] = "parsed"
             return out
-        out_dir = paths.knowledge_dir(cfg) / safe_dirname(sid)
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "experiment.json").write_text(
-            json.dumps(experiment, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
         (out_dir / "report.md").write_text(report, encoding="utf-8")
         lib.set_status(sid, "analyzed", error=None)
-        _step("analyze", True, "experiment.json + report.md")
+        _end(st, "ok", "report.md")
     else:
-        _step("analyze", True, "已分析")
+        st = _stage("experiment")
+        _end(st, "skipped", "已分析")
+        st = _stage("report")
+        _end(st, "skipped", "已分析")
 
-    # 4. 索引
+    # 5. 索引
     rec = lib.get(sid)
+    st = _stage("index")
     md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
     store = VectorStore(paths.vector_dir(cfg))
     existing = store.paper_modes().get(sid)
@@ -111,9 +173,11 @@ def process_paper(sid: str, cfg: dict, lib: Library) -> dict:
             vectors = embed([c.text for c in chunks])
             metas = [{**c.metadata, "mode": "fulltext"} for c in chunks]
             store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
-            _step("index", True, f"{len(chunks)} 块")
+            _end(st, "ok", f"{len(chunks)} 块")
+        else:
+            _end(st, "skipped", "无可索引内容")
     else:
-        _step("index", True, "已索引")
+        _end(st, "skipped", "已索引")
     # indexed 严格表示「分析+索引都完成」（M6 语义）
     rec = lib.get(sid)
     if rec is not None and rec.status == "analyzed":

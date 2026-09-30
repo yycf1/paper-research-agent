@@ -1,9 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { api, pollJob, type ExperimentSchema, type Job, type PaperDetail } from "../api";
+import { api, pollJob, type AskReply, type ExperimentSchema, type Job, type PaperDetail } from "../api";
 import Markdown from "../md";
 import { statusLabel } from "../labels";
 
 type Tab = "report" | "experiment" | "plan" | "fulltext" | "abstract";
+
+/** 一键处理的 5 个阶段（与后端 process.py 的 STAGE_LABELS 对应，顺序即执行序）。 */
+const CANON_STAGES = [
+  { k: "download", label: "下载全文" },
+  { k: "parse", label: "解析文本" },
+  { k: "experiment", label: "提取实验结构" },
+  { k: "report", label: "生成精读报告" },
+  { k: "index", label: "向量索引" },
+];
+
+type StageRec = { stage: string; label: string; status: "running" | "ok" | "skipped" | "failed"; detail: string; duration_ms: number };
 
 export default function PaperDetail({
   id,
@@ -20,6 +31,9 @@ export default function PaperDetail({
   const [job, setJob] = useState<Job | null>(null);
   const [planning, setPlanning] = useState(false);
   const [groups, setGroups] = useState<{ name: string; count: number }[]>([]);
+  const [askQ, setAskQ] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [askOut, setAskOut] = useState<AskReply | null>(null);
 
   const load = () =>
     api.paper(id).then(setPaper).catch((e) => setErr(String(e)));
@@ -68,13 +82,29 @@ export default function PaperDetail({
     setJob({ id: "", kind: "process_paper", status: "running", result: {}, error: "" });
     try {
       const j = await api.process(id);
-      await pollJob(j.id, setJob);
+      const done = await pollJob(j.id, setJob);
       await load();
       onChanged();
+      // 处理成功直接展示核心产物：精读报告
+      if (done.status === "done" && done.result?.final_status === "indexed") setTab("report");
     } catch (e) {
       setErr(String(e));
       setJob(null);
       load(); // 失败也刷新：paper.error 可能已被后端更新
+    }
+  };
+
+  const doAsk = async () => {
+    if (!askQ.trim()) return;
+    setAsking(true);
+    setErr("");
+    try {
+      const out = await api.ask(askQ.trim(), id);
+      setAskOut(out);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setAsking(false);
     }
   };
 
@@ -91,7 +121,14 @@ export default function PaperDetail({
   ] as { k: Tab; label: string; show: boolean }[]).filter((t) => t.show);
   const active = tabs.find((t) => t.k === tab) ? tab : tabs[0]?.k;
   const processing = job?.status === "running";
-  const steps = ((job?.result?.steps as { stage: string; ok: boolean; detail: string }[]) ?? []);
+  const jobDone = job != null && (job.status === "done" || job.status === "error");
+  const stageRecs = ((job?.result?.stages as StageRec[] | undefined) ?? []);
+  const stageMap = new Map(stageRecs.map((s) => [s.stage, s]));
+  const failedStage = stageRecs.find((s) => s.status === "failed");
+  const finalStatus = typeof job?.result?.final_status === "string" ? String(job.result.final_status) : null;
+  const totalMs = stageRecs.reduce((acc, s) => acc + (s.duration_ms || 0), 0);
+  // 针对本文提问的前提：全文已入知识库（处理链完成或至少已分析）
+  const canAsk = !!paper.full_text || paper.status === "indexed" || paper.status === "analyzed";
 
   const doDelete = async () => {
     const shown = paper.title.length > 40 ? paper.title.slice(0, 40) + "…" : paper.title;
@@ -121,8 +158,14 @@ export default function PaperDetail({
           >
             {planning ? "规划中…" : paper.repro_plan ? "重新规划" : "生成复现方案"}
           </button>
-          <button className="primary" style={{ height: "100%" }} onClick={process} disabled={processing || planning}>
-            {processing ? "处理中…" : "一键处理"}
+          <button
+            className="primary"
+            style={{ height: "100%" }}
+            onClick={process}
+            disabled={processing || planning}
+            title="下载全文 → 解析 → 提取实验结构与精读报告 → 向量索引。完成后可针对本文提问、生成复现方案"
+          >
+            {processing ? "处理中…" : paper.full_text ? "重新处理" : "一键处理"}
           </button>
         </div>
       </div>
@@ -150,31 +193,57 @@ export default function PaperDetail({
         </span>
       </div>
 
-      {job && (processing || steps.length > 0) && (
-        <div className="section-block">
-          <h3>处理进度{!processing && job.status === "done" ? "（已结束）" : ""}</h3>
-          <div className="steps">
-            {steps.length === 0 && processing && <div className="hint"><span className="spin" />排队启动中…</div>}
-            {steps.map((s, i) => (
-              <div key={i} className="step">
-                <span className={s.ok ? "ok" : "no"}>{s.ok ? "✓" : "✗"}</span>
-                <span>{stageLabel(s.stage)} — {s.detail}</span>
-              </div>
-            ))}
+      {job && (processing || (jobDone && stageRecs.length > 0)) && (
+        <div className="section-block pprocess">
+          <h3>处理进度</h3>
+          <div className="pexplain">
+            一键处理 = 下载全文 → 解析 → 提取实验结构与精读报告 → 向量索引入知识库。
+            完成后可针对本文提问、生成复现方案。
           </div>
-          {!processing && job.status === "done" && typeof job.result?.final_status === "string" && (
-            <div className="hint" style={{ marginTop: 8 }}>
-              最终状态：{statusLabel(String(job.result.final_status))}（失败步骤修正后可重新「一键处理」）
+          <div className="ptimeline">
+            {CANON_STAGES.map((cs) => {
+              const s = stageMap.get(cs.k);
+              const status = s?.status ?? "pending";
+              return (
+                <div key={cs.k} className={`pstage p-${status}`}>
+                  <span className="p-ico">
+                    {status === "ok" ? "✓" : status === "failed" ? "✗" : status === "running" ? <span className="spin" /> : status === "skipped" ? "–" : "○"}
+                  </span>
+                  <span className="p-label">{cs.label}</span>
+                  <span className="p-detail">
+                    {s?.detail || (status === "pending" ? (processing ? "等待中" : "未执行") : "")}
+                  </span>
+                  <span className="p-ms">{s && s.duration_ms > 0 ? fmtMs(s.duration_ms) : ""}</span>
+                </div>
+              );
+            })}
+          </div>
+          {jobDone && !failedStage && finalStatus === "indexed" && (
+            <div className="done-card ok">
+              {stageRecs.length > 0 && stageRecs.every((s) => s.status === "skipped")
+                ? "✓ 产物已就绪——这篇论文此前已处理完成，全文在知识库中，可直接在下方「针对本文提问」，或生成复现方案。"
+                : `✓ 处理完成${totalMs > 0 ? `（共 ${fmtMs(totalMs)}）` : ""}——全文已入知识库，可在下方「针对本文提问」验证效果，或生成复现方案。`}
             </div>
           )}
+          {jobDone && (failedStage || (finalStatus && finalStatus !== "indexed")) && (
+            <div className="done-card bad">
+              ✗ {failedStage ? `「${failedStage.label}」失败：${failedStage.detail}` : `最终状态：${statusLabel(finalStatus!)}`}
+              <span className="hint">
+                已完成的部分都保留了；问题排除后重新「一键处理」会跳过已完成的阶段继续推进。
+                若该论文没有开放全文，可手动下载 PDF 后用列表上方「上传」导入。
+              </span>
+            </div>
+          )}
+          {job.status === "error" && <div className="err" style={{ marginTop: 8 }}>⚠ 任务失败：{job.error}</div>}
         </div>
       )}
-      {job?.status === "error" && <div className="err">⚠ 任务失败：{job.error}</div>}
       {paper.error && <div className="err" style={{ marginBottom: 10 }}>上次错误：{paper.error}</div>}
 
       {tabs.length === 0 ? (
-        <div className="hint" style={{ marginTop: 30 }}>
-          还没有产物。点击右上角「一键处理」：下载 → 解析 → 知识提取 → 索引，完成后这里会出现精读报告与实验结构。
+        <div className="hint" style={{ marginTop: 30, lineHeight: 1.8 }}>
+          还没有产物。点击右上角「一键处理」，这条链路会依次执行：
+          <br />① <b>下载全文</b>（OA 链接）→ ② <b>解析</b>成 Markdown → ③ <b>提取实验结构</b>（研究目标/方法/数据集/结果 + 置信度）→
+          <br />④ <b>生成精读报告</b> → ⑤ <b>向量索引</b>——完成后这里会出现报告与实验结构，并且可以<b>针对本文提问</b>。
         </div>
       ) : (
         <>
@@ -185,22 +254,61 @@ export default function PaperDetail({
               </span>
             ))}
           </div>
-          {active === "report" && <div className="section-block"><Markdown className="body-md" text={paper.report ?? ""} /></div>}
+          {active === "report" && <div className="section-block"><Markdown className="body-md tall" text={paper.report ?? ""} /></div>}
           {active === "plan" && <div className="section-block"><Markdown className="body-md" text={paper.repro_plan ?? ""} /></div>}
-          {active === "abstract" && <div className="section-block"><div className="body">{paper.abstract}</div></div>}
+          {active === "abstract" && <div className="section-block"><div className="body">{stripHtml(paper.abstract)}</div></div>}
           {active === "fulltext" && (
             <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>
           )}
           {active === "experiment" && exp && <ExperimentView exp={exp} />}
         </>
       )}
+
+      {canAsk && (
+        <div className="section-block askbox">
+          <h3>针对本文提问</h3>
+          <div className="hint">基于已索引的全文知识块检索作答（RAG，带出处页码/章节）——这是「一键处理」最直接的用途。</div>
+          <div className="ask-row">
+            <input
+              type="text"
+              placeholder="例：这篇方法的核心创新点是什么？比基线提升了多少？"
+              value={askQ}
+              onChange={(e) => setAskQ(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && doAsk()}
+            />
+            <button className="primary" disabled={asking || !askQ.trim()} onClick={doAsk}>
+              {asking ? "思考中…" : "提问"}
+            </button>
+          </div>
+          {askOut && (
+            <div className="ask-out">
+              <Markdown text={askOut.answer} />
+              {askOut.sources.length > 0 && (
+                <div className="ask-src">
+                  {askOut.sources.map((s, i) => (
+                    <span key={i} className="hint">出处 [{s.n.join(",")}] 第 {s.page} 页 · {s.section}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-function stageLabel(s: string): string {
-  const m: Record<string, string> = { download: "下载", parse: "解析", analyze: "知识提取", index: "向量索引" };
-  return m[s] ?? s;
+/** 毫秒 → 人类可读时长（阶段耗时用）。 */
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  return `${m}m${Math.round((ms - m * 60_000) / 1000)}s`;
+}
+
+/** EuropePMC 等源的摘要带 HTML 标记（<h4>、<p>…），纯文本展示前剥掉。 */
+function stripHtml(s: string): string {
+  return s.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function ExperimentView({ exp }: { exp: ExperimentSchema }) {
