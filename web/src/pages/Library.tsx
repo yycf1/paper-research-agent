@@ -7,7 +7,7 @@ const PAGE_SIZE = 200; // 后端单页上限；超出部分用「加载更多」
 const SOURCE_LABELS: Record<string, string> = {
   openalex: "OpenAlex",
   europepmc: "Europe PMC",
-  arxiv: "arXiv（常限流）",
+  arxiv: "arXiv",
 };
 
 type FieldScope = "all" | "title" | "abstract";
@@ -329,123 +329,125 @@ export default function Library({
   return (
     <div className="library">
       <div className="list-pane">
-        <div className="toolbar">
-          <input
-            type="text"
-            placeholder="检索论文（支持中文，入库前可预览筛选）…"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && doSearch()}
-          />
-          <button className="primary" disabled={searching || !searchQuery.trim() || sources.length === 0} onClick={doSearch}>
-            {searching ? "检索中…" : "检索"}
-          </button>
-          <label className="chip upload-btn">
-            {uploading ? "上传中…" : "⬆ 上传 PDF/DOCX"}
-            <input
-              type="file"
-              accept=".pdf,.docx"
-              hidden
-              disabled={uploading}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) doUpload(f);
-                e.currentTarget.value = "";
-              }}
-            />
-          </label>
-        </div>
-        <div className="toolbar" style={{ borderTop: "none", paddingTop: 0 }}>
-          <span className="hint" style={{ whiteSpace: "nowrap" }}>检索源：</span>
-          {Object.entries(SOURCE_LABELS).map(([key, label]) => (
-            <span key={key} className={`chip ${sources.includes(key) ? "on" : ""}`} onClick={() => toggleSource(key)}>
-              {label}
-            </span>
-          ))}
-          <span
-            className={`chip ${showAdvanced ? "on" : ""}`}
-            onClick={() => setShowAdvanced((v) => !v)}
-            title="作者、标题/摘要限定、排序、引用数与全文过滤"
-          >
-            ⚙ 高级筛选
-          </span>
-        </div>
-        {showAdvanced && (
-          <div className="toolbar" style={{ borderTop: "none", paddingTop: 0, flexWrap: "wrap", gap: 8 }}>
+        <div className="lib-head">
+          <div className="lib-row main">
             <input
               type="text"
-              placeholder="作者（如 Yann LeCun）"
-              value={author}
-              onChange={(e) => setAuthor(e.target.value)}
-              style={{ width: 170 }}
+              className="lib-search"
+              placeholder="输入主题检索论文，如「图神经网络 推荐系统」…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && doSearch()}
             />
-            <select value={field} onChange={(e) => setField(e.target.value as FieldScope)} style={{ height: 32 }}>
-              {(Object.keys(FIELD_LABELS) as FieldScope[]).map((k) => (
-                <option key={k} value={k}>匹配：{FIELD_LABELS[k]}</option>
-              ))}
-            </select>
-            <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)} style={{ height: 32 }}>
-              {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
-                <option key={k} value={k}>排序：{SORT_LABELS[k]}</option>
-              ))}
-            </select>
-            <input
-              type="number"
-              placeholder="最低被引"
-              min={0}
-              value={minCitations}
-              onChange={(e) => setMinCitations(e.target.value)}
-              style={{ width: 96 }}
-            />
-            <label className={`chip ${oaOnly ? "on" : ""}`} style={{ cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
-              <input type="checkbox" checked={oaOnly} onChange={(e) => setOaOnly(e.target.checked)} /> 仅可下载全文
+            <button className="primary" disabled={searching || !searchQuery.trim() || sources.length === 0} onClick={doSearch}>
+              {searching ? "检索中…" : "检索"}
+            </button>
+            <label className="btn-outline upload-btn">
+              {uploading ? "上传中…" : "上传 PDF/DOCX"}
+              <input
+                type="file"
+                accept=".pdf,.docx"
+                hidden
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) doUpload(f);
+                  e.currentTarget.value = "";
+                }}
+              />
             </label>
-            <span className="hint" style={{ whiteSpace: "nowrap" }}>年份</span>
-            <input
-              type="number"
-              placeholder="从"
-              min={1900}
-              max={2100}
-              value={yearFrom}
-              onChange={(e) => setYearFrom(e.target.value)}
-              style={{ width: 76 }}
-            />
-            <span className="hint">–</span>
-            <input
-              type="number"
-              placeholder="到"
-              min={1900}
-              max={2100}
-              value={yearTo}
-              onChange={(e) => setYearTo(e.target.value)}
-              style={{ width: 76 }}
-            />
           </div>
-        )}
-        <div className="toolbar" style={{ borderTop: "none", paddingTop: 0 }}>
+          <div className="lib-row sub">
+            <span className="hint row-label">来源</span>
+            <div className="chips">
+              {Object.entries(SOURCE_LABELS).map(([key, label]) => (
+                <span key={key} className={`chip ${sources.includes(key) ? "on" : ""}`} onClick={() => toggleSource(key)}>
+                  {label}
+                </span>
+              ))}
+            </div>
+            <span className="flex-spacer" />
+            <button
+              className="ghost sm"
+              onClick={() => setShowAdvanced((v) => !v)}
+              title="作者、标题/摘要限定、排序、引用数与全文过滤"
+            >
+              高级筛选 {showAdvanced ? "▲" : "▼"}
+            </button>
+          </div>
+          {showAdvanced && (
+            <div className="adv-grid">
+              <label className="adv-field">
+                <span>作者</span>
+                <input
+                  type="text"
+                  placeholder="如 Yann LeCun"
+                  value={author}
+                  onChange={(e) => setAuthor(e.target.value)}
+                />
+              </label>
+              <label className="adv-field">
+                <span>匹配字段</span>
+                <select value={field} onChange={(e) => setField(e.target.value as FieldScope)}>
+                  {(Object.keys(FIELD_LABELS) as FieldScope[]).map((k) => (
+                    <option key={k} value={k}>{FIELD_LABELS[k]}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="adv-field">
+                <span>排序</span>
+                <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+                  {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+                    <option key={k} value={k}>{SORT_LABELS[k]}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="adv-field">
+                <span>最低被引</span>
+                <input
+                  type="number"
+                  placeholder="0"
+                  min={0}
+                  value={minCitations}
+                  onChange={(e) => setMinCitations(e.target.value)}
+                />
+              </label>
+              <label className="adv-field">
+                <span>发表年份</span>
+                <div className="adv-year">
+                  <input type="number" placeholder="从" min={1900} max={2100} value={yearFrom} onChange={(e) => setYearFrom(e.target.value)} />
+                  <i>–</i>
+                  <input type="number" placeholder="到" min={1900} max={2100} value={yearTo} onChange={(e) => setYearTo(e.target.value)} />
+                </div>
+              </label>
+              <label className="adv-check">
+                <input type="checkbox" checked={oaOnly} onChange={(e) => setOaOnly(e.target.checked)} />
+                仅可下载全文
+              </label>
+            </div>
+          )}
+        </div>
+        <div className="lib-filter">
           <input
             type="text"
-            placeholder="在库内筛选：标题 / 作者 / DOI…"
+            className="lib-q"
+            placeholder="库内筛选：标题 / 作者 / DOI…"
             value={qInput}
             onChange={(e) => setQInput(e.target.value)}
-            style={{ maxWidth: 260 }}
           />
-          <div className="chips">
-            <span
-              className={`chip ${status === "" ? "on" : ""}`}
-              onClick={() => setStatus("")}
-            >
+          <div className="seg">
+            <button className={`seg-item ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>
               全部 {summary?.total ?? ""}
-            </span>
+            </button>
             {STATUS_ORDER.filter((s) => summary?.counts[s]).map((s) => (
-              <span key={s} className={`chip ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>
+              <button key={s} className={`seg-item ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>
                 {statusLabel(s)} {summary?.counts[s]}
-              </span>
+              </button>
             ))}
           </div>
         </div>
-        <div className="toolbar" style={{ borderTop: "none", paddingTop: 0 }}>
-          <span className="hint" style={{ whiteSpace: "nowrap" }}>分组：</span>
+        <div className="lib-groups">
+          <span className="hint row-label">分组</span>
           <div className="chips">
             <span
               className={`chip ${tag === "" && !untaggedOnly ? "on" : ""}`}
@@ -519,33 +521,31 @@ export default function Library({
                 <span className="grp-act" title="取消" onClick={() => setCreatingGroup(false)}>✕</span>
               </span>
             ) : (
-              <span className="chip" style={{ cursor: "pointer" }} onClick={() => setCreatingGroup(true)}>
+              <span className="chip chip-new" style={{ cursor: "pointer" }} onClick={() => setCreatingGroup(true)}>
                 ＋ 新建分组
               </span>
             )}
           </div>
         </div>
         {checked.size > 0 && (
-          <div className="toolbar" style={{ borderTop: "none", paddingTop: 0, background: "var(--chip-on-bg, rgba(0,0,0,0.04))" }}>
-            <span className="hint" style={{ whiteSpace: "nowrap" }}>已选 {checked.size} 篇：</span>
-            <select value={bulkTarget} onChange={(e) => applyBulk(e.target.value)} disabled={bulkBusy} style={{ height: 32 }}>
+          <div className="lib-bulk">
+            <span className="bulk-count">已选 {checked.size} 篇</span>
+            <select value={bulkTarget} onChange={(e) => applyBulk(e.target.value)} disabled={bulkBusy}>
               <option value="">移动到分组…</option>
               {groups.map((g) => (
                 <option key={g.name} value={g.name}>{g.name}</option>
               ))}
               <option value="__new__">＋ 新建分组…</option>
             </select>
-            <span className="chip" style={{ cursor: "pointer" }} onClick={removeBulk}>移出分组</span>
-            <span className="chip" style={{ cursor: "pointer" }} onClick={() => setChecked(new Set())}>清空选择</span>
+            <button className="ghost sm" onClick={removeBulk} disabled={bulkBusy}>移出分组</button>
+            <button className="ghost sm" onClick={() => setChecked(new Set())}>清空选择</button>
           </div>
         )}
         {(notes.length > 0 || err) && (
-          <div style={{ padding: "6px 16px" }}>
+          <div className="lib-notes">
             {err && <div className="err">⚠ {err}</div>}
             {notes.map((n, i) => (
-              <div key={i} className="hint">
-                · {n}
-              </div>
+              <div key={i} className="hint">· {n}</div>
             ))}
           </div>
         )}
@@ -556,12 +556,12 @@ export default function Library({
               加载中…
             </div>
           ) : papers.length === 0 ? (
-            <div className="loading">
-              {untaggedOnly
-                ? "没有未分组的论文。"
-                : tag
-                  ? "该分组下暂无论文。"
-                  : "没有符合条件的论文。检索一批，或上传本地 PDF/DOCX。"}
+            <div className="empty-state">
+              <div className="es-icon">📚</div>
+              <div className="es-title">
+                {untaggedOnly ? "没有未分组的论文" : tag ? "该分组下暂无论文" : "文献库还是空的"}
+              </div>
+              <div className="es-sub">用上方主题检索一批论文入库，或上传本地 PDF/DOCX 开始精读。</div>
             </div>
           ) : (
             <table className="papers">
@@ -570,10 +570,10 @@ export default function Library({
                   <th style={{ width: 34 }}>
                     <input type="checkbox" checked={allVisibleChecked} onChange={toggleAllVisible} title="全选本页" />
                   </th>
-                  <th style={{ width: 90 }}>状态</th>
+                  <th style={{ width: 86 }}>状态</th>
                   <th style={{ width: 56 }}>年份</th>
-                  <th style={{ width: 56 }}>引用</th>
-                  <th style={{ width: 64 }}>全文</th>
+                  <th style={{ width: 56 }}>被引</th>
+                  <th style={{ width: 60 }}>全文</th>
                   <th>标题（{total} 篇）</th>
                 </tr>
               </thead>
@@ -596,12 +596,14 @@ export default function Library({
                         {statusLabel(p.status)}
                       </span>
                     </td>
-                    <td>{p.year ?? "-"}</td>
-                    <td>{p.citations ?? "-"}</td>
-                    <td>{p.has_pdf ? "✓" : p.abstract_only ? "摘要" : "-"}</td>
+                    <td className="num">{p.year ?? "—"}</td>
+                    <td className="num">{p.citations ?? "—"}</td>
+                    <td className="num" title={p.has_pdf ? "已下载全文" : p.abstract_only ? "仅摘要入库" : "未获取全文"}>
+                      {p.has_pdf ? "✓" : p.abstract_only ? "摘要" : "—"}
+                    </td>
                     <td className="title-cell">
                       <div className="paper-title">{p.title}</div>
-                      {p.tag && <div className="hint" style={{ fontSize: 11.5 }}>分组：{p.tag}</div>}
+                      {p.tag && <div className="hint paper-tagline">分组：{p.tag}</div>}
                       {p.error && <div className="paper-err" title={p.error}>⚠ {p.error}</div>}
                     </td>
                   </tr>
@@ -610,10 +612,10 @@ export default function Library({
             </table>
           )}
           {!loading && papers.length < total && (
-            <div className="loading" style={{ padding: 12 }}>
-              <span className="chip" onClick={loadMore}>
+            <div className="load-more">
+              <button className="ghost sm" onClick={loadMore}>
                 加载更多（已显示 {papers.length} / {total} 篇）
-              </span>
+              </button>
             </div>
           )}
         </div>
@@ -630,8 +632,9 @@ export default function Library({
           }}
         />
       ) : (
-        <div className="detail-pane" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <div className="hint">← 点击左侧论文查看详情、精读报告与实验结构</div>
+        <div className="detail-pane detail-empty">
+          <div className="es-icon">🗂</div>
+          <div className="es-sub">点击左侧论文，查看详情、精读报告与实验结构</div>
         </div>
       )}
 
@@ -640,7 +643,7 @@ export default function Library({
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <div>
-                <div style={{ fontWeight: 700 }}>
+                <div className="modal-title">
                   检索到 {preview.candidates.length} 条候选（新 {freshCount} 条，库内已有 {preview.candidates.length - freshCount} 条）
                 </div>
                 <div className="hint">
@@ -648,9 +651,7 @@ export default function Library({
                   {preview.optimized ? "（已自动优化）" : ""} · 各源候选：{JSON.stringify(preview.source_hits)}
                 </div>
               </div>
-              <span style={{ cursor: "pointer", color: "var(--muted)" }} onClick={() => setPreview(null)}>
-                ✕
-              </span>
+              <span className="modal-x" onClick={() => setPreview(null)}>✕</span>
             </div>
             <div className="modal-body">
               {preview.candidates.map((c) => (
