@@ -26,13 +26,14 @@ class Candidate:
 
 @dataclass
 class PreviewResult:
-    """检索预览（未写库）。"""
+    """检索预览（未写库）。degraded_sources：本次不可用的源名 → 原因。"""
 
     candidates: list[Candidate] = field(default_factory=list)
     total_hits: int = 0
     notes: list[str] = field(default_factory=list)
     plan: dict = field(default_factory=dict)
     source_hits: dict[str, int] = field(default_factory=dict)  # 源名 → 候选数（跨子查询累计）
+    degraded_sources: dict[str, str] = field(default_factory=dict)  # 源名 → 故障原因（M15）
 
 
 @dataclass
@@ -149,10 +150,12 @@ def search_sources(
             )
             if tool_result.status == "fatal":
                 result.notes.append(f"{name}：{tool_result.error}")
+                result.degraded_sources[name] = tool_result.error
                 continue
             if tool_result.status != "ok":
                 hint = "可在 config.yaml 配置 proxy" if name == "arxiv" else "请检查网络"
                 result.notes.append(f"{name} 不可用（{tool_result.error}），已跳过——{hint}")
+                result.degraded_sources[name] = tool_result.error
                 continue
             papers, issues = filter_valid_papers(tool_result.data)
             result.notes.extend(f"结果校验拦截：{issue}" for issue in issues)

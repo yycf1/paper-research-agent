@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
@@ -18,6 +19,9 @@ from paper_agent.sources import europepmc as epmc_src
 from paper_agent.sources import openalex as oa_src
 
 ToolStatus = Literal["ok", "retryable_error", "degraded", "fatal"]
+
+# 限流特征：数据源错误消息里的状态码/措辞（各源统一为 "HTTP 429: …"）
+_RATE_LIMIT_RE = re.compile(r"429|rate.?limit|too many requests", re.IGNORECASE)
 
 SOURCE_MODULES = {"openalex": oa_src, "europepmc": epmc_src, "arxiv": arxiv_src}
 
@@ -60,6 +64,10 @@ def run_tool(
     except fatal_errors as exc:
         return ToolResult(tool=name, status="fatal", error=f"参数或用法错误：{exc}")
     except SourceUnavailable as exc:
+        # M15：retryable_error 语义落地——限流（429 等）属暂时性失败，框架层
+        # 可按 retry_after 自动重试；其余源故障仍按 degraded 交由上层换路。
+        if _RATE_LIMIT_RE.search(str(exc)):
+            return ToolResult(tool=name, status="retryable_error", error=str(exc), retry_after=15)
         return ToolResult(tool=name, status="degraded", error=str(exc))
     except Exception as exc:  # 意外异常：按不可用处理但标记 unexpected 供排查
         return ToolResult(
@@ -157,11 +165,14 @@ def filter_valid_papers(papers: list[Paper], *, current_year: int = 2026) -> tup
 
 TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "search_papers": {
-        "description": "按主题检索学术论文（OpenAlex/Europe PMC/arXiv 多源，自动去重入库）",
+        "description": (
+            "按主题检索学术论文（OpenAlex/Europe PMC/arXiv 多源）。只检索预览不写库；"
+            "query 请用英文学术表述。结果带序号，供 add_papers 按序号挑选入库"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "检索主题词（支持中英文）"},
+                "query": {"type": "string", "description": "检索主题词（建议英文学术表述）"},
                 "max_results": {"type": "integer", "minimum": 1, "maximum": 50,
                                 "description": "每源返回条数上限"},
                 "year_from": {"type": "integer", "description": "只保留该年份及以后"},
@@ -172,8 +183,26 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
                 "sort": {"type": "string", "enum": ["relevance", "citations", "newest"],
                          "description": "排序：相关度 / 引用数 / 最新"},
                 "oa_only": {"type": "boolean", "description": "只保留有全文可下载的结果"},
+                "sources": {"type": "string",
+                            "description": "逗号分隔的数据源（openalex,europepmc,arxiv），缺省全用"},
             },
             "required": ["query"],
+        },
+    },
+    "add_papers": {
+        "description": "把最近一次 search_papers 预览中的候选论文入库（写文献库账本）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pick": {
+                    "type": "string",
+                    "description": (
+                        "要入库的候选序号，如 \"1,3-5\"；缺省或 \"all\" 收入全部"
+                        "「库内没有」的新候选"
+                    ),
+                },
+                "tag": {"type": "string", "description": "可选：入库时归入该分组"},
+            },
         },
     },
     "ask_library": {
@@ -191,5 +220,62 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "explore_directions": {
         "description": "用户不清楚方向时，基于库内论文主题分布建议可探索的研究方向",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    "compare_papers": {
+        "description": (
+            "跨论文对比：按主题在库内多篇论文各自检索最相关的知识块，返回分组证据"
+            "（带章节/页码）。综合对比表/差异分析前必须先用它收集证据，不要凭记忆对比"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "对比主题（用于在各论文内检索证据）"},
+                "paper_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "要对比的论文 id 列表（库内 source_id）；缺省取最近已入库的 4 篇",
+                },
+                "k_per_paper": {"type": "integer", "minimum": 1, "maximum": 5,
+                                "description": "每篇论文检索的证据块数（缺省 3）"},
+            },
+            "required": ["topic"],
+        },
+    },
+    "read_repro_plan": {
+        "description": "读取一篇论文的复现方案（repro_plan.md）与实验结构（experiment.json），供写复现代码前理解方法与步骤",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"source_id": {"type": "string", "description": "库内论文 id"}},
+            "required": ["source_id"],
+        },
+    },
+    "write_code": {
+        "description": "把复现/原型代码写入该论文的隔离工作区（data/repro/<id>/workspace）。只写 .py 文件，文件名不能带路径",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string", "description": "库内论文 id（决定工作区）"},
+                "filename": {"type": "string", "description": "代码文件名（仅文件名，如 baseline.py）"},
+                "content": {"type": "string", "description": "完整代码内容（UTF-8 源码）"},
+            },
+            "required": ["source_id", "filename", "content"],
+        },
+    },
+    "run_code": {
+        "description": (
+            "在隔离工作区以独立进程执行已写入的 .py 文件（默认超时 60s，上限 180s），"
+            "返回退出码/stdout/stderr。执行前需用户确认；stderr 有报错时修代码重跑，"
+            "运行成功则汇报输出与指标"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string", "description": "库内论文 id（决定工作区）"},
+                "filename": {"type": "string", "description": "要执行的 .py 文件名"},
+                "timeout_sec": {"type": "integer", "minimum": 5, "maximum": 180,
+                                "description": "超时秒数（缺省 60）"},
+            },
+            "required": ["source_id", "filename"],
+        },
     },
 }

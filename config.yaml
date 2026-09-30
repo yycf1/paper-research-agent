@@ -32,4 +32,11 @@ pipeline:
   year_from: 2020
   download_budget: 10
 
+# Agent 模式护栏（M15）：熔断与预算是硬闸，prompt 约束只是建议
+agent:
+  max_steps: 8            # 工具调用步数熔断（触顶后强制无工具总结）
+  token_budget: 120000    # 单任务 token 预算（超出触发软着陆）
+  add_cap: 20             # add_papers 单次入库上限（超出直接拒绝，要求分批）
+  confirm_threshold: 5    # 单次入库达到该数量需人工确认（HITL 钩子）
+
 data_dir: data

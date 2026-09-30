@@ -5,6 +5,6 @@
 """
 
 from paper_agent.cli.core import app
-from paper_agent.cli import admin, flow, ingest, qa  # noqa: F401  导入即注册命令
+from paper_agent.cli import admin, agent, flow, ingest, qa  # noqa: F401  导入即注册命令
 
 __all__ = ["app"]

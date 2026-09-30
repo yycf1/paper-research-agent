@@ -9,7 +9,14 @@ from rich.table import Table
 
 from paper_agent.cli.core import FAIL, WARN, _data_dir, _library, app, console
 from paper_agent.config import PROJECT_ROOT, load_config
-from paper_agent.rag.eval import judge_answer, judge_retrieval, load_evalset as evalset_load
+from paper_agent.rag.eval import (
+    aggregate_rank_metrics,
+    first_relevant_rank,
+    judge_answer,
+    judge_retrieval,
+    load_evalset as evalset_load,
+    rank_metrics,
+)
 from paper_agent.rag.qa import Retriever, answer_question
 from paper_agent.rag.vectorstore import VectorStore
 
@@ -89,11 +96,14 @@ def eval_cmd(
     with_llm: bool = typer.Option(
         False, "--with-llm", help="同时生成答案并按关键词判定（消耗 LLM 调用）"
     ),
+    report: bool = typer.Option(
+        False, "--report", help="附加排序指标报告：hit@k 曲线 + MRR + nDCG@8"
+    ),
     evalset: Path = typer.Option(
         PROJECT_ROOT / "eval" / "evalset.json", "--evalset", help="评测集 JSON 路径"
     ),
 ) -> None:
-    """RAG 回归评测：检索命中率；--with-llm 附加答案关键词命中率。"""
+    """RAG 回归评测：检索命中率；--with-llm 附加答案关键词命中率；--report 附加排序指标。"""
     cfg = load_config()
     try:
         data = evalset_load(evalset)
@@ -150,5 +160,33 @@ def eval_cmd(
             console.print(
                 f"答案关键词命中率：[bold]{a_pass}/{len(a_judged)}（{a_pass / len(a_judged):.0%}）[/bold]"
             )
+    if report:
+        # 排序指标：固定 k=8 统一检索深度（与主表 --k 解耦，主表语义不变）
+        REPORT_KS = (1, 3, 5, 8)
+        report_k = max(REPORT_KS)
+        metric_rows: list[dict] = []
+        detail = Table(show_header=True, header_style="bold", title="排序指标明细（k=8）")
+        detail.add_column("case", style="cyan", no_wrap=True)
+        detail.add_column("首个相关块排名", justify="center")
+        detail.add_column("RR", justify="right")
+        detail.add_column("nDCG@8", justify="right")
+        for case in cases:
+            if not case.get("expect_sections"):
+                continue  # 范围外用例（诚实拒绝）无期望出处，不进排序指标分母
+            hits = retriever.retrieve(case["question"], k=report_k, paper_id=case.get("paper_id"))
+            metrics = rank_metrics(case, hits, ks=REPORT_KS)
+            metrics["id"] = case["id"]
+            metric_rows.append(metrics)
+            rank = first_relevant_rank(case, hits)
+            rank_text = str(rank) if rank else f">{report_k}"
+            detail.add_row(case["id"], rank_text, f"{metrics['rr']:.2f}", f"{metrics['ndcg@8']:.2f}")
+        console.print()
+        console.print(detail)
+        agg = aggregate_rank_metrics(metric_rows)
+        hits_line = " ｜ ".join(f"hit@{k_} {agg.get(f'hit@{k_}', 0):.0%}" for k_ in REPORT_KS)
+        console.print(
+            f"[bold]排序指标[/bold]（{len(metric_rows)} 条）：{hits_line} ｜ "
+            f"MRR [bold]{agg.get('rr', 0):.3f}[/bold] ｜ nDCG@8 [bold]{agg.get('ndcg@8', 0):.3f}[/bold]"
+        )
     if llm_error:
         console.print(f"{WARN} 答案判定因 LLM 配置缺失被跳过（补齐 .env Key 后用 --with-llm 重跑）")
