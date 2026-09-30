@@ -138,6 +138,39 @@ export interface Job {
   error: string;
 }
 
+/** 运行时设置（M17/M20）：Key 永远只回脱敏形式（尾 4 位）。 */
+export interface SettingsView {
+  base_url: string;
+  model: string;
+  api_key_masked: string;
+  has_key: boolean;
+  theme: "dark" | "light";
+}
+
+/** Agent 任务的一步工具调用（后端 AgentStep 的序列化）。 */
+export interface AgentStepView {
+  step: number;
+  tool: string;
+  arguments: Record<string, unknown>;
+  status: "ok" | "degraded" | "retryable_error" | "fatal";
+  detail: string;
+  duration_ms: number;
+}
+
+/** Agent 任务状态：轮询 /agent/tasks/{id} 增量可见。 */
+export interface AgentTaskState {
+  id: string;
+  task: string;
+  status: "running" | "waiting_confirm" | "done" | "error";
+  steps?: AgentStepView[];
+  step_count: number;
+  pending_confirm: { count: number; titles: string[] } | null;
+  answer: string;
+  stopped_reason: "final" | "max_steps" | "token_budget" | "error";
+  usage: { prompt: number; completion: number };
+  error: string;
+}
+
 const BASE = ""; // 开发模式经 Vite 代理转发到 pa serve；生产由 FastAPI 同端口托管
 
 async function req<T>(path: string, init?: RequestInit, timeoutMs = 120_000): Promise<T> {
@@ -259,6 +292,28 @@ export const api = {
   run: (query: string) =>
     req<Job>("/jobs/run", { method: "POST", body: JSON.stringify({ query }) }),
   job: (id: string) => req<Job>(`/jobs/${id}`),
+  agentSubmit: (task: string, maxSteps?: number) =>
+    req<AgentTaskState>("/agent/tasks", {
+      method: "POST",
+      body: JSON.stringify({ task, max_steps: maxSteps ?? undefined }),
+    }),
+  agentTask: (id: string) => req<AgentTaskState>(`/agent/tasks/${encodeURIComponent(id)}`),
+  agentConfirm: (id: string, approve: boolean) =>
+    req<{ ok: boolean }>(`/agent/tasks/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ approve }),
+    }),
+  settings: () => req<SettingsView>("/settings"),
+  saveSettings: (p: { base_url: string; model: string; api_key?: string | null; theme?: "dark" | "light" }) =>
+    req<{ ok: boolean; api_key_masked: string; has_key: boolean }>("/settings", {
+      method: "PUT",
+      body: JSON.stringify(p),
+    }),
+  testSettings: (p: { base_url?: string; model?: string; api_key?: string | null }) =>
+    req<{ ok: boolean; message: string }>("/settings/test", {
+      method: "POST",
+      body: JSON.stringify(p),
+    }, 60_000),
 };
 
 /** 轮询任务直至 done/error（或超时）。 */
