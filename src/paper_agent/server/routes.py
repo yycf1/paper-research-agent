@@ -12,10 +12,11 @@ from pydantic import BaseModel, Field
 
 from paper_agent import __version__, paths
 from paper_agent.chatstore import ChatStore
-from paper_agent.config import load_config
+from paper_agent.config import load_config, load_runtime_settings, resolve_endpoint, settings_path
 from paper_agent.download import safe_dirname
 from paper_agent.graph.pipeline import run_pipeline
 from paper_agent.library import Library, PaperRecord
+from paper_agent.llm import test_endpoint
 from paper_agent.models import Paper
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.rag.vectorstore import VectorStore
@@ -24,7 +25,7 @@ from paper_agent.services.library_ops import UnsupportedFormat, delete_paper, im
 from paper_agent.services.process import process_paper
 from paper_agent.services.repro import generate_repro_plan
 from paper_agent.services.search import PreviewResult, ingest_papers, search_sources
-from paper_agent.server import jobs
+from paper_agent.server import agent_jobs, jobs
 
 router = APIRouter()
 
@@ -538,6 +539,79 @@ def api_explore(lib: Library = Depends(open_lib)) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 运行时设置（M17）：模型厂商 / Key 在 Web 端可配，落 data/settings.json
+# ---------------------------------------------------------------------------
+
+
+class SettingsPayload(BaseModel):
+    """base_url/model 传空串=清空覆盖（回退 config.yaml）；api_key=None/空=保持已存 Key。
+
+    GET 永远只回脱敏后的 Key（尾 4 位），不回显明文——密钥一旦展示过就会
+    进日志/截图/缓存，界面只需让用户确认「配过了」而不是看见它。
+    """
+
+    base_url: str = Field("", max_length=300)
+    model: str = Field("", max_length=120)
+    api_key: str | None = Field(None, max_length=300)
+    theme: str | None = Field(None, pattern="^(dark|light)$")
+
+
+def _mask_key(key: str) -> str:
+    if not key:
+        return ""
+    if len(key) <= 8:
+        return "****"
+    return f"{key[:4]}****{key[-4:]}"
+
+
+@router.get("/settings")
+def api_get_settings() -> dict:
+    cfg = load_config()
+    ep = resolve_endpoint(cfg.get("llm", {}) or {})
+    return {
+        "base_url": ep.base_url,
+        "model": ep.model,
+        "api_key_masked": _mask_key(ep.api_key),
+        "has_key": bool(ep.api_key),
+        "theme": load_runtime_settings(cfg).get("theme", "dark"),
+    }
+
+
+@router.put("/settings")
+def api_save_settings(req: SettingsPayload) -> dict:
+    cfg = load_config()
+    path = settings_path(cfg)
+    data: dict = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            data = {}  # 损坏文件直接重建
+    data["base_url"] = req.base_url.strip()
+    data["model"] = req.model.strip()
+    if req.api_key and req.api_key.strip():  # 留空=不改已存 Key
+        data["api_key"] = req.api_key.strip()
+    if req.theme in ("dark", "light"):
+        data["theme"] = req.theme
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    ep = resolve_endpoint(load_config().get("llm", {}) or {})
+    return {"ok": True, "api_key_masked": _mask_key(ep.api_key), "has_key": bool(ep.api_key)}
+
+
+@router.post("/settings/test")
+def api_test_settings(req: SettingsPayload) -> dict:
+    """测试连接：优先用表单当前值（允许未保存先试），缺省回退当前生效配置。"""
+    ep = resolve_endpoint(load_config().get("llm", {}) or {})
+    ok, msg = test_endpoint(
+        base_url=req.base_url.strip() or ep.base_url,
+        api_key=(req.api_key or "").strip() or ep.api_key,
+        model=req.model.strip() or ep.model,
+    )
+    return {"ok": ok, "message": msg}
+
+
+# ---------------------------------------------------------------------------
 # 长任务：流水线 / 单篇处理
 # ---------------------------------------------------------------------------
 
@@ -574,11 +648,17 @@ def api_process_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
     if lib.get(sid) is None:
         raise HTTPException(404, f"未找到论文：{sid}")
 
-    def _run(_result: dict) -> dict:
+    def _run(result: dict) -> dict:
         cfg = load_config()
         job_lib = paths.library(cfg)  # 任务线程用自己的连接
         try:
-            return process_paper(sid, cfg, job_lib)
+
+            def _progress(stages: list) -> None:
+                # jobs.submit 传给任务函数的就是轮询端点返回的同一个 dict：
+                # 原地写入阶段快照，前端轮询即时可见（长任务不再跑完才见步骤）
+                result["stages"] = [dict(s) for s in stages]
+
+            return process_paper(sid, cfg, job_lib, progress=_progress)
         finally:
             job_lib.close()
 
@@ -597,3 +677,53 @@ def api_job(job_id: str) -> dict:
 @router.get("/jobs")
 def api_jobs() -> dict:
     return {"jobs": [j.to_dict() for j in jobs.list_jobs()]}
+
+
+# ---------------------------------------------------------------------------
+# Agent 任务（M16）：后台执行 + 步骤轮询 + HITL 确认门
+# ---------------------------------------------------------------------------
+
+
+class AgentTaskRequest(BaseModel):
+    task: str = Field(min_length=1, max_length=2000)
+    max_steps: int | None = Field(None, ge=1, le=50)
+    token_budget: int | None = Field(None, ge=1000)
+
+
+@router.post("/agent/tasks", status_code=202)
+def api_agent_submit(req: AgentTaskRequest) -> dict:
+    """提交 Agent 任务：立即返回任务 id，步骤经 GET 轮询增量可见。"""
+    from datetime import datetime
+
+    cfg = load_config()
+    trace_dir = paths.data_dir(cfg) / "traces" / "web"
+    trace_path = trace_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+    state = agent_jobs.registry.submit(
+        req.task,
+        cfg=cfg,
+        max_steps=req.max_steps,
+        token_budget=req.token_budget,
+        trace_path=trace_path,
+    )
+    return state.to_dict(with_steps=False)
+
+
+@router.get("/agent/tasks/{task_id}")
+def api_agent_task(task_id: str) -> dict:
+    state = agent_jobs.registry.get(task_id)
+    if state is None:
+        raise HTTPException(404, f"未找到 Agent 任务：{task_id}（或服务已重启）")
+    return state.to_dict()
+
+
+class AgentConfirmRequest(BaseModel):
+    approve: bool
+
+
+@router.post("/agent/tasks/{task_id}/confirm")
+def api_agent_confirm(task_id: str, req: AgentConfirmRequest) -> dict:
+    """对等待中的确认门决断（放行/拒绝）；任务不处于等待态返回 409。"""
+    ok = agent_jobs.registry.decide(task_id, req.approve)
+    if not ok:
+        raise HTTPException(409, "任务不在等待确认状态（可能已完成、超时或 id 不存在）")
+    return {"ok": True}
