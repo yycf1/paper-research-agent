@@ -29,6 +29,7 @@
 | M20 双主题 + 去拥挤 | ✅ 完成（CSS 全量 token 化重写：颜色收敛为语义变量，`data-theme` 一键换肤；深色/浅色双主题进设置页（迷你色板卡片 + 即时预览），localStorage 防首帧闪烁 + settings.json 持久化跨设备跟随；全站间距放宽、状态徽章/表头换行修复） |
 | M21 跨页状态保持 + 整列滚动 | ✅ 完成（文献库/助手双页常驻挂载，切页不卸载组件：Agent 任务时间线与轮询、库页筛选与滚动位置跨页保留，顶栏「助手」执行中小红点呼吸提醒；库页滚动容器上移——检索/过滤/分组区随内容滚走不再常驻占屏，表头 sticky 相对列容器钉住续读，修 border-collapse 下 sticky 表头边框渲染问题） |
 | M22 MCP server | ✅ 完成（`pa mcp` 以 stdio 传输把 9 个工具暴露为 MCP 协议服务——Claude Desktop / Cursor 等 host 开箱接入；schema 直接消费 TOOL_REGISTRY 零二次维护，ToolExecutor 与四态语义/硬护栏原样复用，HITL 确认插座映射为 PAPER_AGENT_CONFIRM 环境变量 + stderr 审计；SDK 内存流协议测试 5 用例 + 真实子进程 stdio 冒烟） |
+| M23 任务中心：历史 + SSE | ✅ 完成（Agent 任务跨会话可回看：轨迹文件名编入任务 id 作为重启后回读的关联键，列表端点合并 live 注册表与磁盘轨迹、缺 final 记录如实标中断，详情端点从轨迹重建完整时间线；`GET .../events` SSE 推送替代 1.2s 轮询——同进程读共享状态对象增量推送 snapshot/step/status/end 三段式，前端断流自动回退轮询兜底；库页失败行原始报错收敛为「源站拒绝访问（403）」式短语、全文留悬停提示） |
 
 ## 快速开始
 
