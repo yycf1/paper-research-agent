@@ -475,7 +475,12 @@ export default function Assistant({
 
                 {agentTask.status === "waiting_confirm" && agentTask.pending_confirm && (
                   <div className="confirm-box">
-                    <div className="c-title">⚠ Agent 请求入库 {agentTask.pending_confirm.count} 篇论文</div>
+                    <div className="c-title">
+                      ⚠{" "}
+                      {agentTask.pending_confirm.titles[0]?.startsWith("运行代码")
+                        ? `Agent 请求运行代码（${agentTask.pending_confirm.count} 项）`
+                        : `Agent 请求入库 ${agentTask.pending_confirm.count} 篇论文`}
+                    </div>
                     {agentTask.pending_confirm.titles.slice(0, 5).map((t, i) => (
                       <div key={i} className="c-item">· {t}</div>
                     ))}
@@ -483,7 +488,9 @@ export default function Assistant({
                       <div className="c-item hint">…等共 {agentTask.pending_confirm.titles.length} 篇</div>
                     )}
                     <div className="c-actions">
-                      <button className="primary" onClick={() => decideConfirm(true)}>确认入库</button>
+                      <button className="primary" onClick={() => decideConfirm(true)}>
+                        {agentTask.pending_confirm.titles[0]?.startsWith("运行代码") ? "确认运行" : "确认入库"}
+                      </button>
                       <button className="ghost" onClick={() => decideConfirm(false)}>拒绝</button>
                     </div>
                   </div>

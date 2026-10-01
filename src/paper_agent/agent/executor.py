@@ -316,6 +316,17 @@ class ToolExecutor:
             raise ValueError("只允许执行/写入 .py 文件")
         return workspace / name
 
+    @staticmethod
+    def _record_run(workspace: Path, payload: dict) -> None:
+        """把一次真实执行追加进 runs.jsonl（工作区旁）：UI 与审计共用的运行档案。
+
+        只记录真正跑过的执行；被确认门拒绝的调用没有发生，不产生记录。
+        """
+        record = {"ts": time.time(), **payload}
+        runs_path = workspace.parent / "runs.jsonl"
+        with runs_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     def _tool_read_plan(self, args: dict) -> dict:
         sid = str(args.get("source_id") or "").strip()
         if not sid:
@@ -393,6 +404,11 @@ class ToolExecutor:
                 out = out.decode("utf-8", errors="replace")
             if isinstance(err, bytes):
                 err = err.decode("utf-8", errors="replace")
+            self._record_run(workspace, {
+                "filename": target.name, "exit_code": None, "timed_out": True,
+                "timeout_sec": timeout,
+                "stdout": out[:3000], "stderr": (err or f"进程超过 {timeout}s 被终止")[:3000],
+            })
             return {
                 "ran": True, "timed_out": True, "exit_code": None,
                 "timeout_sec": timeout,
@@ -400,11 +416,17 @@ class ToolExecutor:
                 "note": "超时：优化算法复杂度、缩小数据规模或加大 timeout_sec 后重试",
             }
         duration = int((time.monotonic() - started) * 1000)
+        stdout = proc.stdout.decode("utf-8", errors="replace")[:3000]
+        stderr = proc.stderr.decode("utf-8", errors="replace")[:3000]
+        self._record_run(workspace, {
+            "filename": target.name, "exit_code": proc.returncode, "timed_out": False,
+            "duration_ms": duration, "stdout": stdout, "stderr": stderr,
+        })
         return {
             "ran": True,
             "exit_code": proc.returncode,
             "duration_ms": duration,
-            "stdout": proc.stdout.decode("utf-8", errors="replace")[:3000],
-            "stderr": proc.stderr.decode("utf-8", errors="replace")[:3000],
+            "stdout": stdout,
+            "stderr": stderr,
             "note": "exit_code 非 0 时读 stderr 修代码重跑；成功则汇报输出中的关键指标",
         }

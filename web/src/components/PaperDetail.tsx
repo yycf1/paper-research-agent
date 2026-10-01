@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { api, pollJob, type AskReply, type ExperimentSchema, type Job, type PaperDetail } from "../api";
+import { api, pollJob, type AskReply, type ExperimentSchema, type Job, type PaperDetail, type ReproView } from "../api";
 import Markdown from "../md";
 import { statusLabel } from "../labels";
 
@@ -34,6 +34,7 @@ export default function PaperDetail({
   const [askQ, setAskQ] = useState("");
   const [asking, setAsking] = useState(false);
   const [askOut, setAskOut] = useState<AskReply | null>(null);
+  const [repro, setRepro] = useState<ReproView | null>(null);
 
   const load = () =>
     api.paper(id).then(setPaper).catch((e) => setErr(String(e)));
@@ -41,6 +42,8 @@ export default function PaperDetail({
   useEffect(() => {
     load();
     api.tags().then((t) => setGroups(t.tags)).catch(() => {});
+    // 复现产物（工作区文件/运行记录）与论文主体独立加载，缺省不阻塞详情
+    api.paperRepro(id).then(setRepro).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -112,10 +115,11 @@ export default function PaperDetail({
   if (!paper) return <div className="detail-pane"><div className="loading"><span className="spin" />加载中…</div></div>;
 
   const exp = paper.experiment;
+  const hasReproArtifacts = !!paper.repro_plan?.trim() || (repro?.files.length ?? 0) > 0;
   const tabs = ([
     { k: "report", label: "精读报告", show: !!paper.report?.trim() },
     { k: "experiment", label: "实验结构", show: !!exp },
-    { k: "plan", label: "复现方案", show: !!paper.repro_plan?.trim() },
+    { k: "plan", label: "复现", show: hasReproArtifacts },
     { k: "fulltext", label: "全文", show: !!paper.full_text },
     { k: "abstract", label: "摘要", show: !!paper.abstract },
   ] as { k: Tab; label: string; show: boolean }[]).filter((t) => t.show);
@@ -255,7 +259,19 @@ export default function PaperDetail({
             ))}
           </div>
           {active === "report" && <div className="section-block"><Markdown className="body-md tall" text={paper.report ?? ""} /></div>}
-          {active === "plan" && <div className="section-block"><Markdown className="body-md" text={paper.repro_plan ?? ""} /></div>}
+          {active === "plan" && (
+            <div className="section-block">
+              {paper.repro_plan?.trim() ? (
+                <>
+                  <div className="hint" style={{ marginBottom: 8 }}>复现方案（repro_plan.md）——Agent 按此方案写原型并执行：</div>
+                  <Markdown className="body-md" text={paper.repro_plan} />
+                </>
+              ) : (
+                <div className="hint" style={{ marginBottom: 8 }}>该论文尚无复现方案，但工作区已有产物（此前由 Agent 生成）：</div>
+              )}
+              <ReproWorkspace repro={repro} />
+            </div>
+          )}
           {active === "abstract" && <div className="section-block"><div className="body">{stripHtml(paper.abstract)}</div></div>}
           {active === "fulltext" && (
             <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>
@@ -295,6 +311,79 @@ export default function PaperDetail({
         </div>
       )}
     </div>
+  );
+}
+
+/** 复现工作区（M24）：Agent 写下的代码文件与 run_code 运行记录，浏览器可见可点。 */
+function ReproWorkspace({ repro }: { repro: ReproView | null }) {
+  const [file, setFile] = useState<{ name: string; content: string } | null>(null);
+  const [loading, setLoading] = useState("");
+  const [err, setErr] = useState("");
+  if (!repro) return null;
+  const { files, runs } = repro;
+  if (files.length === 0 && runs.length === 0) return null;
+
+  const open = async (name: string) => {
+    setLoading(name);
+    setErr("");
+    try {
+      setFile(await api.paperReproFile(repro.source_id, name));
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setLoading("");
+    }
+  };
+
+  const fmtTs = (ts: number) =>
+    new Date(ts * 1000).toLocaleString("zh-CN", {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+
+  return (
+    <>
+      {files.length > 0 && (
+        <div className="section-block">
+          <h3>工作区文件（Agent 生成，点击查看）</h3>
+          <div className="chips" style={{ marginBottom: 10 }}>
+            {files.map((f) => (
+              <span
+                key={f.name}
+                className={`chip ${file?.name === f.name ? "on" : ""}`}
+                onClick={() => void open(f.name)}
+                title={`${f.bytes} 字节`}
+              >
+                {loading === f.name ? "读取中…" : f.name}
+              </span>
+            ))}
+          </div>
+          {err && <div className="err">⚠ {err}</div>}
+          {file && <pre className="code-view">{file.content}</pre>}
+        </div>
+      )}
+      {runs.length > 0 && (
+        <div className="section-block">
+          <h3>运行记录（{runs.length} 次，点击展开输出）</h3>
+          {runs.map((r, i) => (
+            <details key={i} className="run-rec">
+              <summary>
+                <span className={`tag ${r.timed_out ? "conf-mid" : r.exit_code === 0 ? "conf-high" : "conf-low"}`}>
+                  {r.timed_out ? "超时" : r.exit_code === 0 ? "exit 0" : `exit ${r.exit_code}`}
+                </span>
+                <code className="run-file">{r.filename}</code>
+                <span className="hint">
+                  {fmtTs(r.ts)}
+                  {r.duration_ms ? ` · ${fmtMs(r.duration_ms)}` : ""}
+                </span>
+              </summary>
+              <pre className="code-view">
+                {[r.stdout, r.stderr].filter((x) => x && x.trim()).join("\n") || "（无输出）"}
+              </pre>
+            </details>
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 

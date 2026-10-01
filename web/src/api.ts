@@ -185,6 +185,30 @@ export interface AgentTaskBrief {
   ts: number;
 }
 
+/** 复现产物（M24）：方案 + 工作区文件 + run_code 运行记录。 */
+export interface ReproFile {
+  name: string;
+  bytes: number;
+  mtime: number;
+}
+
+export interface ReproRun {
+  ts: number;
+  filename: string;
+  exit_code: number | null;
+  timed_out: boolean;
+  duration_ms?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+export interface ReproView {
+  source_id: string;
+  plan: string | null;
+  files: ReproFile[];
+  runs: ReproRun[];
+}
+
 const BASE = ""; // 开发模式经 Vite 代理转发到 pa serve；生产由 FastAPI 同端口托管
 
 async function req<T>(path: string, init?: RequestInit, timeoutMs = 120_000): Promise<T> {
@@ -302,6 +326,12 @@ export const api = {
       `/papers/${encodeURIComponent(id)}/plan`,
       { method: "POST" },
       180_000,
+    ),
+  paperRepro: (id: string) =>
+    req<ReproView>(`/papers/${encodeURIComponent(id)}/repro`),
+  paperReproFile: (id: string, name: string) =>
+    req<{ name: string; content: string }>(
+      `/papers/${encodeURIComponent(id)}/repro/file?name=${encodeURIComponent(name)}`,
     ),
   run: (query: string) =>
     req<Job>("/jobs/run", { method: "POST", body: JSON.stringify({ query }) }),

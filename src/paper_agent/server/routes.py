@@ -366,6 +366,61 @@ def api_plan_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
     }
 
 
+_REPRO_VIEW_EXTS = (".py", ".md", ".txt", ".json", ".log")
+_REPRO_FILE_MAX_BYTES = 200_000  # 文件查看上限：工作区是代码/日志，超限截断
+
+
+def _repro_base(cfg: dict, sid: str) -> Path:
+    return paths.data_dir(cfg) / "repro" / safe_dirname(sid)
+
+
+@router.get("/papers/{sid}/repro")
+def api_paper_repro(sid: str, lib: Library = Depends(open_lib)) -> dict:
+    """复现产物概览：方案 + 工作区文件列表 + 运行记录（M24 浏览器可见化）。"""
+    sid = _resolve_sid(sid, lib)
+    cfg = load_config()
+    base = _repro_base(cfg, sid)
+    ws = base / "workspace"
+    files: list[dict] = []
+    if ws.is_dir():
+        for p in ws.iterdir():
+            if p.is_file():
+                st = p.stat()
+                files.append({"name": p.name, "bytes": st.st_size, "mtime": st.st_mtime})
+        files.sort(key=lambda x: x["mtime"], reverse=True)
+    runs: list[dict] = []
+    runs_path = base / "runs.jsonl"
+    if runs_path.exists():
+        for line in runs_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                runs.append(json.loads(line))
+            except ValueError:
+                continue
+        runs.reverse()  # 新→旧
+    plan_path = paths.knowledge_dir(cfg) / safe_dirname(sid) / "repro_plan.md"
+    plan = plan_path.read_text(encoding="utf-8") if plan_path.exists() else None
+    return {"source_id": sid, "plan": plan, "files": files, "runs": runs}
+
+
+@router.get("/papers/{sid}/repro/file")
+def api_paper_repro_file(sid: str, name: str = Query(""), lib: Library = Depends(open_lib)) -> dict:
+    """查看工作区文件内容：白名单与执行器同一套（纯文件名 + 扩展名限制）。"""
+    sid = _resolve_sid(sid, lib)
+    name = str(name or "").strip()
+    if not name or Path(name).name != name:
+        raise HTTPException(400, "文件名非法（只允许纯文件名）")
+    if not name.endswith(_REPRO_VIEW_EXTS):
+        raise HTTPException(400, "只允许查看 .py/.md/.txt/.json/.log 文件")
+    path = _repro_base(load_config(), sid) / "workspace" / name
+    if not path.is_file():
+        raise HTTPException(404, f"文件不存在：{name}")
+    data = path.read_bytes()[:_REPRO_FILE_MAX_BYTES]
+    return {"name": name, "content": data.decode("utf-8", errors="replace")}
+
+
 @router.delete("/papers/{sid}")
 def api_delete_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
     """全链删除：账本 + 向量块 + 原文/解析/知识产物。"""

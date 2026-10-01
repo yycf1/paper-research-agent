@@ -119,6 +119,13 @@ def test_write_and_run_code_happy_path(tmp_path):
     assert r.data["ran"] is True and r.data["exit_code"] == 0
     assert "hi 42" in r.data["stdout"]
 
+    # M24：真实执行落运行档案（工作区旁 runs.jsonl），UI 从这里读
+    runs_path = paths.data_dir({"data_dir": str(tmp_path / "data")}) / "repro" / safe_dirname("openalex:W1") / "runs.jsonl"
+    records = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert records[0]["filename"] == "hello.py" and records[0]["exit_code"] == 0
+    assert "hi 42" in records[0]["stdout"]
+
 
 def test_run_code_reports_runtime_error_as_ok_payload(tmp_path):
     """代码崩溃 ≠ 工具失败：ok 结果带非零 exit_code 与 stderr，供模型自纠错。"""
@@ -143,6 +150,10 @@ def test_run_code_timeout_feedback(tmp_path):
         "source_id": "openalex:W1", "filename": "slow.py", "timeout_sec": 5,
     }))
     assert r.ok and r.data["timed_out"] is True and r.data["exit_code"] is None
+    # 超时也发生了真实执行：同样入运行档案
+    runs_path = paths.data_dir({"data_dir": str(tmp_path / "data")}) / "repro" / safe_dirname("openalex:W1") / "runs.jsonl"
+    records = [json.loads(line) for line in runs_path.read_text(encoding="utf-8").splitlines()]
+    assert records[-1]["timed_out"] is True
 
 
 def test_run_code_declined_by_confirm(tmp_path):
@@ -152,6 +163,9 @@ def test_run_code_declined_by_confirm(tmp_path):
     }))
     r = ex.execute("run_code", json.dumps({"source_id": "openalex:W1", "filename": "x.py"}))
     assert r.ok and r.data["declined"] is True and r.data["ran"] is False
+    # 被拒绝的执行没有发生：不留运行档案
+    runs_path = paths.data_dir({"data_dir": str(tmp_path / "data")}) / "repro" / safe_dirname("openalex:W1") / "runs.jsonl"
+    assert not runs_path.exists()
 
 
 def test_code_filename_whitelist(tmp_path):
