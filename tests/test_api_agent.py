@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -188,3 +189,107 @@ def test_agent_confirm_on_running_task_409(monkeypatch, tmp_path):
     client = _client(monkeypatch, tmp_path)
     r = client.post("/api/agent/tasks/nonexistent/confirm", json={"approve": True})
     assert r.status_code == 409
+
+
+def test_agent_tasks_list_and_history_readback(monkeypatch, tmp_path):
+    """任务列表：live 优先；清空注册表（模拟重启）后由轨迹文件回读历史。"""
+    client = _client(monkeypatch, tmp_path)
+    script = [_tool_resp("library_status", "{}", "c1")]
+
+    def fake_chat(messages, *, tools, **_):
+        if not tools:
+            return _final("（收尾）")
+        return script.pop(0) if script else _final("（收尾）")
+
+    monkeypatch.setattr("paper_agent.llm.chat_with_tools", fake_chat)
+    tid = client.post("/api/agent/tasks", json={"task": "看看库状态"}).json()["id"]
+    _wait_status(client, tid, {"done"})
+
+    # 完成后：live 条目存在，且轨迹文件名含任务 id（重启后回读的关联键）
+    tasks = client.get("/api/agent/tasks").json()["tasks"]
+    mine = [t for t in tasks if t["id"] == tid]
+    assert mine and mine[0]["live"] is True and mine[0]["status"] == "done"
+
+    from paper_agent.server import agent_jobs as aj
+
+    aj.registry._tasks.clear()  # 模拟服务重启（注册表在内存中，轨迹在磁盘上）
+    tasks = client.get("/api/agent/tasks").json()["tasks"]
+    mine = [t for t in tasks if t["id"] == tid]
+    assert mine and mine[0]["live"] is False and mine[0]["step_count"] == 1
+
+    detail = client.get(f"/api/agent/tasks/{tid}")
+    assert detail.status_code == 200
+    d = detail.json()
+    assert d["live"] is False
+    assert d["steps"][0]["tool"] == "library_status"
+    assert d["answer"] == "（收尾）"
+    assert client.get("/api/agent/tasks/nonexistent").status_code == 404
+
+
+def test_agent_events_stream(monkeypatch, tmp_path):
+    """SSE 事件流：snapshot 起始、终态后 end 收尾，content-type 为 text/event-stream。"""
+    client = _client(monkeypatch, tmp_path)
+    script = [_tool_resp("library_status", "{}", "c1")]
+
+    def fake_chat(messages, *, tools, **_):
+        if not tools:
+            return _final("（收尾）")
+        return script.pop(0) if script else _final("（收尾）")
+
+    monkeypatch.setattr("paper_agent.llm.chat_with_tools", fake_chat)
+    tid = client.post("/api/agent/tasks", json={"task": "看看库状态"}).json()["id"]
+    _wait_status(client, tid, {"done"})
+
+    events = []
+    with client.stream("GET", f"/api/agent/tasks/{tid}/events") as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    types = [e["type"] for e in events]
+    assert types[0] == "snapshot"
+    assert events[0]["status"] == "done"  # 连接时任务已完成：快照即终态
+    assert types[-1] == "end"
+
+
+def test_agent_events_stream_incremental(monkeypatch, tmp_path):
+    """SSE 增量：连接时任务仍在第 2 步上等待，放行后应收到 step/status 事件推进到 end。"""
+    import threading
+
+    client = _client(monkeypatch, tmp_path)
+    release = threading.Event()
+    calls = {"n": 0}
+
+    def fake_chat(messages, *, tools, **_):
+        if not tools:
+            return _final("（收尾）")
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _tool_resp("library_status", "{}", "c1")
+        release.wait(timeout=10)  # 第 2 次调用先卡住：给 SSE 连接留出 running 窗口
+        return _tool_resp("explore_directions", "{}", "c2")
+
+    monkeypatch.setattr("paper_agent.llm.chat_with_tools", fake_chat)
+    tid = client.post("/api/agent/tasks", json={"task": "看看库状态"}).json()["id"]
+
+    import time as _time
+
+    deadline = _time.time() + 5
+    while _time.time() < deadline:
+        if client.get(f"/api/agent/tasks/{tid}").json()["step_count"] >= 1:
+            break
+        _time.sleep(0.02)
+
+    events = []
+    with client.stream("GET", f"/api/agent/tasks/{tid}/events") as r:
+        assert r.status_code == 200
+        release.set()
+        for line in r.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+    types = [e["type"] for e in events]
+    assert types[0] == "snapshot"
+    assert any(e["type"] == "step" and e["step"]["tool"] == "explore_directions" for e in events)
+    assert any(e["type"] == "status" and e["state"]["status"] == "done" for e in events)
+    assert types[-1] == "end"

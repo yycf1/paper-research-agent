@@ -171,6 +171,20 @@ export interface AgentTaskState {
   error: string;
 }
 
+/** 任务历史条目（M23）：live=注册表内存态；否则来自磁盘轨迹回读。 */
+export interface AgentTaskBrief {
+  id: string;
+  task: string;
+  status: AgentTaskState["status"];
+  step_count: number;
+  answer: string;
+  stopped_reason: string;
+  usage: { prompt: number; completion: number };
+  error: string;
+  live: boolean;
+  ts: number;
+}
+
 const BASE = ""; // 开发模式经 Vite 代理转发到 pa serve；生产由 FastAPI 同端口托管
 
 async function req<T>(path: string, init?: RequestInit, timeoutMs = 120_000): Promise<T> {
@@ -298,6 +312,7 @@ export const api = {
       body: JSON.stringify({ task, max_steps: maxSteps ?? undefined }),
     }),
   agentTask: (id: string) => req<AgentTaskState>(`/agent/tasks/${encodeURIComponent(id)}`),
+  agentTasks: () => req<{ tasks: AgentTaskBrief[] }>("/agent/tasks"),
   agentConfirm: (id: string, approve: boolean) =>
     req<{ ok: boolean }>(`/agent/tasks/${encodeURIComponent(id)}/confirm`, {
       method: "POST",

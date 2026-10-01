@@ -5,6 +5,8 @@ import {
   type ChatReply,
   type SourceRef,
   type AgentTaskState,
+  type AgentTaskBrief,
+  type AgentStepView,
 } from "../api";
 import Markdown from "../md";
 
@@ -72,6 +74,9 @@ export default function Assistant({
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const pollTimer = useRef<number | null>(null);
+  const esRef = useRef<EventSource | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory] = useState<AgentTaskBrief[]>([]);
 
   const refreshSessions = useCallback(
     () => api.sessions().then((d) => setSessions(d.sessions)).catch(() => {}),
@@ -103,10 +108,11 @@ export default function Assistant({
     if (fromUrl) openSession(fromUrl);
   }, [refreshSessions, openSession]);
 
-  // 组件卸载时停掉轮询，避免 setState 到已卸载组件
+  // 组件卸载时停掉轮询与 SSE，避免 setState 到已卸载组件
   useEffect(
     () => () => {
       if (pollTimer.current) window.clearTimeout(pollTimer.current);
+      esRef.current?.close();
     },
     [],
   );
@@ -169,7 +175,7 @@ export default function Assistant({
     }
   };
 
-  // ---- Agent 模式：提交 + 轮询 + 确认门 ----
+  // ---- Agent 模式：提交 + SSE 事件流（轮询兜底） + 确认门 ----
 
   const tick = useCallback(
     async (id: string) => {
@@ -200,7 +206,7 @@ export default function Assistant({
     try {
       const t = await api.agentSubmit(task);
       setAgentTask(t);
-      void tick(t.id);
+      listenEvents(t.id);
     } catch (e) {
       setAgentBusy(false);
       setAgentTask({
@@ -208,6 +214,71 @@ export default function Assistant({
         answer: "", stopped_reason: "error", usage: { prompt: 0, completion: 0 },
         error: String(e), steps: [],
       });
+    }
+  };
+
+  // SSE 事件流：连接即收全量快照，此后每步/状态变化增量推送，终态后服务端发 end。
+  // 断流（代理缓冲/服务重启）时回退到轮询兜底，保证 UI 不冻结。
+  const listenEvents = (id: string) => {
+    esRef.current?.close();
+    const es = new EventSource(`/api/agent/tasks/${encodeURIComponent(id)}/events`);
+    esRef.current = es;
+    es.onmessage = (ev) => {
+      let m:
+        | ({ type: "snapshot" } & AgentTaskState)
+        | { type: "step"; step: AgentStepView }
+        | { type: "status"; state: Partial<AgentTaskState> }
+        | { type: "end" };
+      try {
+        m = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      if (m.type === "snapshot") {
+        setAgentTask(m);
+      } else if (m.type === "step") {
+        const step = m.step;
+        setAgentTask((cur) => (cur ? { ...cur, steps: [...(cur.steps ?? []), step] } : cur));
+      } else if (m.type === "status") {
+        const st = m.state;
+        setAgentTask((cur) => (cur ? { ...cur, ...st, steps: cur.steps } : (st as AgentTaskState)));
+        if (st.status === "done" || st.status === "error") setAgentBusy(false);
+        if (st.status === "done") onLibChanged();
+      } else {
+        es.close();
+        esRef.current = null;
+      }
+    };
+    es.onerror = () => {
+      es.close();
+      esRef.current = null;
+      if (pollTimer.current) window.clearTimeout(pollTimer.current);
+      pollTimer.current = window.setTimeout(() => void tick(id), 300);
+    };
+  };
+
+  // ---- 任务历史（M23）：live 条目来自注册表，其余由磁盘轨迹回读 ----
+
+  const toggleHistory = async () => {
+    const next = !historyOpen;
+    setHistoryOpen(next);
+    if (next) {
+      const d = await api.agentTasks().catch(() => null);
+      if (d) setHistory(d.tasks);
+    }
+  };
+
+  const loadHistory = async (h: AgentTaskBrief) => {
+    setHistoryOpen(false);
+    esRef.current?.close();
+    esRef.current = null;
+    if (pollTimer.current) window.clearTimeout(pollTimer.current);
+    try {
+      const full = await api.agentTask(h.id); // 历史 id 由轨迹文件回读，含全部步骤
+      setAgentBusy(false);
+      setAgentTask(full);
+    } catch {
+      /* 轨迹缺失等：保留当前视图 */
     }
   };
 
@@ -271,11 +342,54 @@ export default function Assistant({
             Agent 任务
           </button>
           {mode === "agent" && (
-            <span className="hint" style={{ alignSelf: "center", marginLeft: 8 }}>
-              LLM 自主调用工具完成多步任务；批量入库会先请求确认
-            </span>
+            <>
+              <span className="hint" style={{ alignSelf: "center", marginLeft: 8 }}>
+                LLM 自主调用工具完成多步任务；批量入库会先请求确认
+              </span>
+              <span className="flex-spacer" />
+              <button className={historyOpen ? "on" : ""} onClick={() => void toggleHistory()}>
+                历史 ▾
+              </button>
+            </>
           )}
         </div>
+
+        {mode === "agent" && historyOpen && (
+          <div className="agent-history">
+            {history.length === 0 && (
+              <div className="hint" style={{ padding: "10px 28px" }}>
+                还没有任务记录（提交过一次任务后，这里跨会话可回看）
+              </div>
+            )}
+            {history.map((h) => (
+              <div
+                key={`${h.id}-${h.ts}`}
+                className={`agent-hist-item ${agentTask?.id === h.id ? "on" : ""}`}
+                onClick={() => void loadHistory(h)}
+              >
+                <span
+                  className={`hist-badge ${h.status === "done" ? "done" : h.status === "error" ? "error" : "running"}`}
+                >
+                  {h.status === "done" ? "完成" : h.status === "error" ? "失败" : h.status === "waiting_confirm" ? "待确认" : "进行中"}
+                </span>
+                <div className="hi-main">
+                  <div className="hi-task">{h.task}</div>
+                  <div className="hi-meta hint">
+                    {new Date(h.ts * 1000).toLocaleString("zh-CN", {
+                      month: "2-digit",
+                      day: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                    {" · "}
+                    {h.step_count} 步 · 约 {h.usage.prompt + h.usage.completion} tokens
+                    {h.live && (h.status === "running" || h.status === "waiting_confirm") ? " · 进行中" : ""}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {mode === "chat" ? (
           <>

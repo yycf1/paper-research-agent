@@ -470,6 +470,25 @@ ul.plain { margin: 0; padding-left: 20px; }
 .agent-answer .note { color: var(--yellow); font-size: 12.5px; margin-bottom: 6px; }
 .agent-answer .agent-meta { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
 
+/* Agent 任务历史（M23）：跨会话可回看，条目点击从轨迹重建时间线 */
+.agent-history {
+  display: flex; flex-direction: column;
+  border-bottom: 1px solid var(--border); max-height: 320px; overflow-y: auto;
+}
+.agent-hist-item { display: flex; gap: 10px; align-items: flex-start; padding: 9px 28px; cursor: pointer; }
+.agent-hist-item:hover { background: var(--panel-2); }
+.agent-hist-item.on { background: var(--accent-soft); }
+.hist-badge {
+  flex-shrink: 0; margin-top: 2px; font-size: 11px; padding: 0 8px;
+  border-radius: 999px; border: 1px solid var(--border); color: var(--muted);
+}
+.hist-badge.done { color: var(--green); border-color: var(--green-border); }
+.hist-badge.error { color: var(--red); border-color: var(--red-border); }
+.hist-badge.running { color: var(--accent-2); border-color: var(--accent-border); }
+.hi-main { min-width: 0; }
+.hi-task { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hi-meta { font-size: 11.5px; margin-top: 1px; }
+
 /* ---- 弹窗 ---- */
 .modal-mask {
   position: fixed; inset: 0; background: var(--mask);

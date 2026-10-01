@@ -85,9 +85,14 @@ class _Registry:
         max_steps: int | None = None,
         token_budget: int | None = None,
         trace_path: Path | None = None,
+        task_id: str | None = None,
     ) -> AgentTaskState:
-        """提交任务并在守护线程执行。chat_fn 可注入（测试用假模型）。"""
-        state = AgentTaskState(id=uuid.uuid4().hex[:12], task=task, started_at=time.time())
+        """提交任务并在守护线程执行。chat_fn 可注入（测试用假模型）。
+
+        task_id：调用方预生成并与轨迹文件名共享（M23），任务表条目与磁盘
+        轨迹用同一 id 关联——服务重启后历史条目可由轨迹回读。
+        """
+        state = AgentTaskState(id=task_id or uuid.uuid4().hex[:12], task=task, started_at=time.time())
         handle = _Handle(state=state)
         with self._lock:
             self._tasks[state.id] = handle
@@ -97,6 +102,15 @@ class _Registry:
             daemon=True,
         ).start()
         return state
+
+    def list_tasks(self) -> list[AgentTaskState]:
+        """全部任务（新→旧）。注册表在内存中：重启后由轨迹文件补齐历史。"""
+        with self._lock:
+            return sorted(
+                (h.state for h in self._tasks.values()),
+                key=lambda s: s.started_at,
+                reverse=True,
+            )
 
     def decide(self, task_id: str, approve: bool) -> bool:
         """用户对确认门的决断：置位 Event 唤醒任务线程。返回是否有待决任务。"""

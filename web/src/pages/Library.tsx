@@ -16,6 +16,25 @@ type SortKey = "relevance" | "citations" | "newest";
 const FIELD_LABELS: Record<FieldScope, string> = { all: "全部字段", title: "仅标题", abstract: "仅摘要" };
 const SORT_LABELS: Record<SortKey, string> = { relevance: "相关度", citations: "引用数", newest: "最新发表" };
 
+const ERR_LABELS: Record<string, string> = {
+  "403": "源站拒绝访问",
+  "404": "全文不存在",
+  "401": "需要授权",
+  "429": "请求过频",
+  "500": "源站异常",
+  "502": "源站异常",
+  "503": "源站异常",
+};
+
+/** 表格行的错误摘要：原始报错（长 URL + 状态码）收敛为一句话，全文留在 title 提示。 */
+function fmtError(raw: string): string {
+  const m = raw.match(/->\s*HTTP\s+(\d{3})/i);
+  if (m) return `${ERR_LABELS[m[1]] ?? "下载失败"}（${m[1]}）`;
+  if (/timed?[\s-]?out|timeout/i.test(raw)) return "连接超时";
+  if (/非 PDF|not a pdf|text\/html/i.test(raw)) return "返回内容不是 PDF";
+  return raw.length > 64 ? `${raw.slice(0, 61)}…` : raw;
+}
+
 export default function Library({
   summary,
   detailId,
@@ -604,7 +623,7 @@ export default function Library({
                     <td className="title-cell">
                       <div className="paper-title">{p.title}</div>
                       {p.tag && <div className="hint paper-tagline">分组：{p.tag}</div>}
-                      {p.error && <div className="paper-err" title={p.error}>⚠ {p.error}</div>}
+                      {p.error && <div className="paper-err" title={p.error}>⚠ {fmtError(p.error)}</div>}
                     </td>
                   </tr>
                 ))}

@@ -692,28 +692,170 @@ class AgentTaskRequest(BaseModel):
 
 @router.post("/agent/tasks", status_code=202)
 def api_agent_submit(req: AgentTaskRequest) -> dict:
-    """提交 Agent 任务：立即返回任务 id，步骤经 GET 轮询增量可见。"""
+    """提交 Agent 任务：立即返回任务 id，步骤经 SSE / 轮询可见。
+
+    任务 id 预生成并编入轨迹文件名（时间戳-id.jsonl）：注册表在内存里，
+    服务重启后 GET /agent/tasks/{id} 与历史列表靠文件名关联回读轨迹。
+    """
     from datetime import datetime
 
     cfg = load_config()
     trace_dir = paths.data_dir(cfg) / "traces" / "web"
-    trace_path = trace_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+    tid = uuid.uuid4().hex[:12]
+    trace_path = trace_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{tid}.jsonl"
     state = agent_jobs.registry.submit(
         req.task,
         cfg=cfg,
         max_steps=req.max_steps,
         token_budget=req.token_budget,
         trace_path=trace_path,
+        task_id=tid,
     )
     return state.to_dict(with_steps=False)
+
+
+def _trace_task_id(stem: str) -> str:
+    """轨迹文件名 → 任务 id：新命名 `时间戳-id.jsonl` 取末段，旧文件用整个 stem。"""
+    parts = stem.split("-")
+    return parts[-1] if len(parts) >= 3 else stem
+
+
+def _history_task(path: Path, *, with_steps: bool) -> dict | None:
+    """解析一条 web 轨迹为任务视图；无有效记录的空文件返回 None。"""
+    task_text = ""
+    steps: list[dict] = []
+    final_rec: dict | None = None
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                kind = rec.get("type")
+                if kind == "task":
+                    task_text = rec.get("task", "")
+                elif kind == "step":
+                    steps.append(
+                        {k: rec.get(k) for k in ("step", "tool", "arguments", "status", "detail", "duration_ms")}
+                    )
+                elif kind == "final":
+                    final_rec = rec
+    except OSError:
+        return None
+    if not task_text and not steps and final_rec is None:
+        return None
+    answer = usage = stopped = ""
+    status = "done"
+    error = ""
+    if final_rec:
+        answer = final_rec.get("answer", "")
+        usage = final_rec.get("usage", {"prompt": 0, "completion": 0})
+        stopped = final_rec.get("stopped_reason", "")
+        if stopped == "error":
+            status, error = "error", answer
+    else:
+        # 逐步追加写的设计：缺 final 记录即进程中断，如实标注而不是伪装完成
+        status, stopped, error = "error", "error", "轨迹缺少最终记录（服务中断）"
+    out = {
+        "id": _trace_task_id(path.stem),
+        "task": task_text,
+        "status": status,
+        "step_count": len(steps),
+        "answer": answer,
+        "stopped_reason": stopped,
+        "usage": usage,
+        "error": error,
+        "pending_confirm": None,
+        "ts": path.stat().st_mtime,
+    }
+    if with_steps:
+        out["steps"] = steps
+    return out
+
+
+@router.get("/agent/tasks")
+def api_agent_tasks() -> dict:
+    """任务历史：内存注册表（含进行中）+ 磁盘轨迹回读，按 id 去重，新→旧。"""
+    cfg = load_config()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for s in agent_jobs.registry.list_tasks():
+        d = s.to_dict(with_steps=False)
+        d["live"] = True
+        d["ts"] = s.started_at
+        out.append(d)
+        seen.add(s.id)
+    trace_dir = paths.data_dir(cfg) / "traces" / "web"
+    if trace_dir.is_dir():
+        files = sorted(trace_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for p in files:
+            d = _history_task(p, with_steps=False)
+            if d and d["id"] not in seen:
+                d["live"] = False
+                out.append(d)
+    return {"tasks": out}
 
 
 @router.get("/agent/tasks/{task_id}")
 def api_agent_task(task_id: str) -> dict:
     state = agent_jobs.registry.get(task_id)
+    if state is not None:
+        d = state.to_dict()
+        d["live"] = True
+        return d
+    # 服务重启后注册表清空：按 id 回读轨迹（含全部步骤，前端时间线原样重建）
+    cfg = load_config()
+    trace_dir = paths.data_dir(cfg) / "traces" / "web"
+    if trace_dir.is_dir():
+        for p in trace_dir.glob("*.jsonl"):
+            if _trace_task_id(p.stem) == task_id:
+                d = _history_task(p, with_steps=True)
+                if d is not None:
+                    d["live"] = False
+                    return d
+    raise HTTPException(404, f"未找到 Agent 任务：{task_id}（或服务已重启且无轨迹）")
+
+
+@router.get("/agent/tasks/{task_id}/events")
+async def api_agent_events(task_id: str):
+    """SSE 步骤事件流：替代 1.2s 轮询——同进程读共享状态对象，增量推送。"""
+    import asyncio
+
+    state = agent_jobs.registry.get(task_id)
     if state is None:
         raise HTTPException(404, f"未找到 Agent 任务：{task_id}（或服务已重启）")
-    return state.to_dict()
+
+    def _sse(obj: dict) -> str:
+        return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
+
+    async def gen():
+        yield _sse({"type": "snapshot", **state.to_dict()})
+        sent = len(state.steps)
+        last_status = state.status
+        while True:
+            if len(state.steps) > sent:
+                for st in state.steps[sent:]:
+                    yield _sse({"type": "step", "step": st})
+                sent = len(state.steps)
+            if state.status != last_status:
+                last_status = state.status
+                yield _sse({"type": "status", "state": state.to_dict(with_steps=False)})
+            if state.status in ("done", "error"):
+                break
+            await asyncio.sleep(0.4)
+        yield _sse({"type": "end"})
+
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 class AgentConfirmRequest(BaseModel):
