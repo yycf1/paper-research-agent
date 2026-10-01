@@ -743,17 +743,23 @@ class AgentTaskRequest(BaseModel):
     task: str = Field(min_length=1, max_length=2000)
     max_steps: int | None = Field(None, ge=1, le=50)
     token_budget: int | None = Field(None, ge=1000)
+    anchor_source_id: str | None = Field(None, max_length=100)  # M26：锚定论文（防续任务漂移）
 
 
 @router.post("/agent/tasks", status_code=202)
-def api_agent_submit(req: AgentTaskRequest) -> dict:
+def api_agent_submit(req: AgentTaskRequest, lib: Library = Depends(open_lib)) -> dict:
     """提交 Agent 任务：立即返回任务 id，步骤经 SSE / 轮询可见。
 
     任务 id 预生成并编入轨迹文件名（时间戳-id.jsonl）：注册表在内存里，
     服务重启后 GET /agent/tasks/{id} 与历史列表靠文件名关联回读轨迹。
+    anchor_source_id 给出时校验论文存在（404/400 由 _resolve_sid 决断），
+    循环层注入锚定约束、执行器收紧工具作用域。
     """
     from datetime import datetime
 
+    anchor = None
+    if (req.anchor_source_id or "").strip():
+        anchor = _resolve_sid(req.anchor_source_id.strip(), lib)
     cfg = load_config()
     trace_dir = paths.data_dir(cfg) / "traces" / "web"
     tid = uuid.uuid4().hex[:12]
@@ -765,6 +771,7 @@ def api_agent_submit(req: AgentTaskRequest) -> dict:
         token_budget=req.token_budget,
         trace_path=trace_path,
         task_id=tid,
+        anchor=anchor,
     )
     return state.to_dict(with_steps=False)
 

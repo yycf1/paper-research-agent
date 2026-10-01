@@ -42,6 +42,7 @@ class AgentTaskState:
     error: str = ""
     started_at: float = 0.0
     finished_at: float = 0.0
+    anchor: str = ""  # M26：锚定论文 id（空 = 未锚定）
 
     def to_dict(self, *, with_steps: bool = True) -> dict:
         out = {
@@ -54,6 +55,7 @@ class AgentTaskState:
             "usage": self.usage,
             "error": self.error,
             "step_count": len(self.steps),
+            "anchor": self.anchor,
         }
         if with_steps:
             out["steps"] = self.steps
@@ -86,19 +88,25 @@ class _Registry:
         token_budget: int | None = None,
         trace_path: Path | None = None,
         task_id: str | None = None,
+        anchor: str | None = None,
     ) -> AgentTaskState:
         """提交任务并在守护线程执行。chat_fn 可注入（测试用假模型）。
 
         task_id：调用方预生成并与轨迹文件名共享（M23），任务表条目与磁盘
         轨迹用同一 id 关联——服务重启后历史条目可由轨迹回读。
+        anchor（M26）：锚定论文 id，注入循环层系统提示 + 收紧执行器工具
+        作用域，防续任务漂移（M25 事故）。
         """
-        state = AgentTaskState(id=task_id or uuid.uuid4().hex[:12], task=task, started_at=time.time())
+        state = AgentTaskState(
+            id=task_id or uuid.uuid4().hex[:12], task=task,
+            started_at=time.time(), anchor=(anchor or "").strip(),
+        )
         handle = _Handle(state=state)
         with self._lock:
             self._tasks[state.id] = handle
         threading.Thread(
             target=self._run,
-            args=(handle, cfg, chat_fn, max_steps, token_budget, trace_path),
+            args=(handle, cfg, chat_fn, max_steps, token_budget, trace_path, state.anchor),
             daemon=True,
         ).start()
         return state
@@ -137,6 +145,7 @@ class _Registry:
         max_steps: int | None,
         token_budget: int | None,
         trace_path: Path | None,
+        anchor: str = "",
     ) -> None:
         state = handle.state
 
@@ -156,7 +165,10 @@ class _Registry:
             try:
                 store = VectorStore(paths.vector_dir(cfg))
                 retriever = Retriever(store) if store.count() > 0 else None
-                executor = ToolExecutor(lib=job_lib, retriever=retriever, cfg=cfg, confirm=_confirm)
+                executor = ToolExecutor(
+                    lib=job_lib, retriever=retriever, cfg=cfg, confirm=_confirm,
+                    anchor=anchor or None,
+                )
                 result = run_agent_task(
                     state.task,
                     executor=executor,
@@ -166,6 +178,7 @@ class _Registry:
                     chat_fn=chat_fn,
                     on_event=_on_event,
                     trace_path=trace_path,
+                    anchor=anchor or None,
                 )
                 state.answer = result.answer
                 state.stopped_reason = result.stopped_reason

@@ -20,10 +20,12 @@ export default function PaperDetail({
   id,
   onClose,
   onChanged,
+  onStartAgent,
 }: {
   id: string;
   onClose: () => void;
   onChanged: () => void;
+  onStartAgent: (task: string, anchor: string) => void;
 }) {
   const [paper, setPaper] = useState<PaperDetail | null>(null);
   const [tab, setTab] = useState<Tab>("report");
@@ -270,6 +272,24 @@ export default function PaperDetail({
                 <div className="hint" style={{ marginBottom: 8 }}>该论文尚无复现方案，但工作区已有产物（此前由 Agent 生成）：</div>
               )}
               <ReproWorkspace repro={repro} />
+              {repro && (repro.files.length > 0 || repro.runs.length > 0) && (
+                <div className="repro-handoff">
+                  <button
+                    className="ghost sm"
+                    onClick={() =>
+                      onStartAgent(
+                        `继续完善这篇论文的复现：检查工作区现有代码（run_real.py 等）与运行记录，推进下一步——`
+                        + `修复失败或超时的运行、补齐评估、或扩大训练规模。只针对本论文的工作区，不要检索或入库新论文。`,
+                        id,
+                      )
+                    }
+                    title="以本论文为锚定发起 Agent 任务：检索/入库类工具将被移除，防止任务漂移（M25 教训）"
+                  >
+                    🤖 交给 Agent 续做（锚定本论文）
+                  </button>
+                  <span className="hint">任务会预填到「助手 → Agent 任务」，确认后执行；执行器将移除检索/入库类工具</span>
+                </div>
+              )}
             </div>
           )}
           {active === "abstract" && <div className="section-block"><div className="body">{stripHtml(paper.abstract)}</div></div>}

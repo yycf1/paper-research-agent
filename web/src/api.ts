@@ -336,10 +336,14 @@ export const api = {
   run: (query: string) =>
     req<Job>("/jobs/run", { method: "POST", body: JSON.stringify({ query }) }),
   job: (id: string) => req<Job>(`/jobs/${id}`),
-  agentSubmit: (task: string, maxSteps?: number) =>
+  agentSubmit: (task: string, maxSteps?: number, anchorSourceId?: string) =>
     req<AgentTaskState>("/agent/tasks", {
       method: "POST",
-      body: JSON.stringify({ task, max_steps: maxSteps ?? undefined }),
+      body: JSON.stringify({
+        task,
+        max_steps: maxSteps ?? undefined,
+        anchor_source_id: anchorSourceId?.trim() || undefined,
+      }),
     }),
   agentTask: (id: string) => req<AgentTaskState>(`/agent/tasks/${encodeURIComponent(id)}`),
   agentTasks: () => req<{ tasks: AgentTaskBrief[] }>("/agent/tasks"),

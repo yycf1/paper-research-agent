@@ -55,6 +55,8 @@ export default function Assistant({
   onAgentBusy,
   onOpenDetail,
   onLibChanged,
+  pendingTask,
+  onConsumePendingTask,
 }: {
   /** 本页是否可见（App 双页常驻挂载，切走时仅隐藏） */
   active: boolean;
@@ -62,6 +64,9 @@ export default function Assistant({
   onAgentBusy: (busy: boolean) => void;
   onOpenDetail: (id: string) => void;
   onLibChanged: () => void;
+  /** M26：详情页「交给 Agent 续做」跨页传入的锚定任务 */
+  pendingTask: { task: string; anchor: string } | null;
+  onConsumePendingTask: () => void;
 }) {
   const [mode, setMode] = useState<"chat" | "agent">("chat");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -77,6 +82,7 @@ export default function Assistant({
   const esRef = useRef<EventSource | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<AgentTaskBrief[]>([]);
+  const [anchorId, setAnchorId] = useState("");  // M26：本任务锚定论文（提交时随任务下发）
 
   const refreshSessions = useCallback(
     () => api.sessions().then((d) => setSessions(d.sessions)).catch(() => {}),
@@ -129,6 +135,15 @@ export default function Assistant({
   useEffect(() => {
     onAgentBusy(agentBusy);
   }, [agentBusy, onAgentBusy]);
+
+  // M26：领取跨页传入的锚定任务——切 Agent 模式、预填不自动运行（用户确认后执行）
+  useEffect(() => {
+    if (!pendingTask) return;
+    setMode("agent");
+    setInput(pendingTask.task);
+    setAnchorId(pendingTask.anchor);
+    onConsumePendingTask();
+  }, [pendingTask, onConsumePendingTask]);
 
   const newChat = () => openSession(null);
 
@@ -200,11 +215,13 @@ export default function Assistant({
     const task = (text ?? input).trim();
     if (!task || agentBusy) return;
     if (pollTimer.current) window.clearTimeout(pollTimer.current);
+    const anchor = anchorId; // 锚只随本次提交走，提交后清掉，不污染下一个任务
     setInput("");
     setAgentBusy(true);
     setAgentTask(null);
     try {
-      const t = await api.agentSubmit(task);
+      const t = await api.agentSubmit(task, undefined, anchor || undefined);
+      setAnchorId("");
       setAgentTask(t);
       listenEvents(t.id);
     } catch (e) {
@@ -335,7 +352,7 @@ export default function Assistant({
       )}
       <div className="chat">
         <div className="mode-switch">
-          <button className={mode === "chat" ? "on" : ""} onClick={() => setMode("chat")}>
+          <button className={mode === "chat" ? "on" : ""} onClick={() => { setMode("chat"); setAnchorId(""); }}>
             对话
           </button>
           <button className={mode === "agent" ? "on" : ""} onClick={() => setMode("agent")}>
@@ -519,6 +536,10 @@ export default function Assistant({
               </>
             )}
           </div>
+        )}
+
+        {mode === "agent" && anchorId && (
+          <div className="anchor-hint">⚓ 已锚定论文 {anchorId} —— 检索 / 入库 / 方向推荐类工具将被移除，防止任务漂移</div>
         )}
 
         <div className="chat-input">

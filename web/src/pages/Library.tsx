@@ -40,11 +40,13 @@ export default function Library({
   detailId,
   onOpenDetail,
   onChanged,
+  onStartAgent,
 }: {
   summary: StatusSummary | null;
   detailId: string | null;
   onOpenDetail: (id: string | null) => void;
   onChanged: () => void;
+  onStartAgent: (task: string, anchor: string) => void;
 }) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [total, setTotal] = useState(0);
@@ -644,6 +646,7 @@ export default function Library({
           key={detailId}
           id={detailId}
           onClose={() => onOpenDetail(null)}
+          onStartAgent={onStartAgent}
           onChanged={() => {
             onChanged();
             load();

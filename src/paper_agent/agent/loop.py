@@ -192,12 +192,18 @@ def run_agent_task(
     chat_fn: Callable[..., ChatResponse] | None = None,
     on_event: Callable[[AgentStep], None] | None = None,
     trace_path: Path | str | None = None,
+    anchor: str | None = None,
 ) -> AgentRunResult:
     """执行一个 Agent 任务。chat_fn 可注入（测试用假模型）；默认走真实 API。
 
     max_steps / token_budget 缺省读 config.yaml 的 agent 节；trace_path 给出时
     把任务、每步工具调用、最终结果以 JSONL 逐步落盘。永不向上抛异常：
     LLM 故障转成 stopped_reason=error 的结果，由调用方渲染。
+
+    anchor（M26）：任务锚定论文 id——约束注入系统提示，配合执行器侧的
+    工具作用域（executor 锚定时隐藏并拒绝检索/入库/方向推荐），把"专注
+    本论文"从 prompt 建议升级为代码强制。锚定信息来自任务发起方（详情页
+    续做按钮 / API 显式传入），不靠模型自己记住上一轮。
     """
     cfg_max_steps, cfg_budget = _defaults_from_cfg(cfg)
     max_steps = max_steps or cfg_max_steps
@@ -208,9 +214,16 @@ def run_agent_task(
         def chat_fn(messages, *, tools):
             return llm.chat_with_tools(messages, tools=tools, cfg=cfg)
 
-    specs = executor.specs()
+    specs = executor.specs_for()
+    system_prompt = SYSTEM_PROMPT
+    if (anchor or "").strip():
+        system_prompt += (
+            f"\n\n任务锚定：本任务只针对论文 {anchor.strip()}。read_repro_plan / write_code / "
+            "run_code 都必须作用在该论文的工作区；检索、入库、方向推荐类工具已被移除，"
+            "不要尝试检索或入库新论文、不要更换研究对象，专注完成锚定任务本身。"
+        )
     messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": task},
     ]
     steps: list[AgentStep] = []

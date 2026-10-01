@@ -36,6 +36,10 @@ from paper_agent.tools import TOOL_REGISTRY, ToolResult, run_tool
 
 _MAX_CANDIDATES_SHOWN = 30  # 单次检索回填给模型的最大候选数（上下文保护）
 _MAX_CODE_BYTES = 30 * 1024  # 单文件代码上限
+
+# 锚定任务的工具作用域（M26）：这些工具会改库或把注意力引向其它论文，
+# 是 M25 漂移事故的直接肇因——锚定任务下从工具面移除并拒绝执行。
+ANCHOR_DENIED_TOOLS = frozenset({"search_papers", "add_papers", "explore_directions"})
 _MAX_EVIDENCE_CHARS = 280  # 对比证据单块截断长度
 _DEFAULT_COMPARE = 4  # 未指定论文时的默认对比篇数
 
@@ -87,6 +91,7 @@ class ToolExecutor:
         cfg: dict | None = None,
         params: dict | None = None,
         confirm: Callable[[int, list[str]], bool] | None = None,
+        anchor: str | None = None,
     ):
         self._lib = lib
         self._retriever = retriever
@@ -97,10 +102,18 @@ class ToolExecutor:
         self._add_cap = int(agent_cfg.get("add_cap", 20))
         self._confirm_threshold = int(agent_cfg.get("confirm_threshold", 5))
         self._confirm = confirm
+        # M26 任务锚定：锚定复现任务时移除易致漂移的工具（最小权限工具集）。
+        # 漂移事故（M25）：续任务未锚定 source_id，模型自行检索、入库了另一篇
+        # 论文并在其工作区写代码——prompt 约束只是建议，作用域在这里代码强制。
+        self._anchor = (anchor or "").strip() or None
+        self._denied = ANCHOR_DENIED_TOOLS if self._anchor else frozenset()
 
     @staticmethod
     def specs() -> list[dict]:
-        """TOOL_REGISTRY → OpenAI tools 参数格式（type/function 包一层）。"""
+        """TOOL_REGISTRY → OpenAI tools 参数格式（type/function 包一层）。
+
+        M26 起锚定任务下移除作用域外工具（见 instance 版 specs_for）。
+        """
         return [
             {
                 "type": "function",
@@ -113,6 +126,13 @@ class ToolExecutor:
             for name, meta in TOOL_REGISTRY.items()
         ]
 
+    def specs_for(self) -> list[dict]:
+        """当前执行器可见的工具规格：锚定任务隐藏作用域外工具——模型看不到
+        就不会调用，比调用后再拒绝更省一步。execute 侧仍保留拦截（防御纵深）。"""
+        if not self._denied:
+            return self.specs()
+        return [s for s in self.specs() if s["function"]["name"] not in self._denied]
+
     @property
     def supported_tools(self) -> list[str]:
         return sorted(TOOL_REGISTRY)
@@ -123,6 +143,14 @@ class ToolExecutor:
             return ToolResult(
                 tool=name, status="fatal",
                 error=f"未知工具：{name}（可用：{', '.join(self.supported_tools)}）",
+            )
+        if name in self._denied:
+            return ToolResult(
+                tool=name, status="fatal",
+                error=(
+                    f"本任务已锚定论文 {self._anchor}，{name} 超出任务作用域（防任务漂移）；"
+                    "请专注完成锚定任务本身"
+                ),
             )
         try:
             args = json.loads(arguments) if arguments and arguments.strip() else {}
@@ -392,7 +420,9 @@ class ToolExecutor:
         started = time.monotonic()
         try:
             proc = subprocess.run(
-                [sys.executable, target.name],
+                # -u 无缓冲：超时杀进程时已打印的内容仍能从管道读到——
+                # M25 教训：块缓冲下超时 = 空 stdout，诊断无从下手
+                [sys.executable, "-u", target.name],
                 cwd=workspace,
                 capture_output=True,
                 timeout=timeout,

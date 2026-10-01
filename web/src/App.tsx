@@ -22,6 +22,8 @@ export default function App() {
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
+  // M26：详情页「交给 Agent 续做」跨页传递的锚定任务（Assistant 领取后清空）
+  const [pendingTask, setPendingTask] = useState<{ task: string; anchor: string } | null>(null);
 
   const refresh = () => api.status().then(setSummary).catch(() => {});
   // 后端 settings 是主题的持久层；localStorage 没有用户选择时（新设备）跟随后端
@@ -44,6 +46,14 @@ export default function App() {
     else u.searchParams.delete("paper");
     window.history.replaceState(null, "", u);
     setLocation({ tab: "library", paper: id });
+  };
+  // M26：锚定续做——详情页一键把任务带进助手页（预填不自动运行，用户确认后执行）
+  const startAgentTask = (task: string, anchor: string) => {
+    setPendingTask({ task, anchor });
+    const u = new URL(window.location.href);
+    u.searchParams.set("tab", "chat");
+    window.history.replaceState(null, "", u);
+    setLocation({ tab: "assistant", paper });
   };
   const switchTab = (t: Tab) => {
     const u = new URL(window.location.href);
@@ -94,7 +104,13 @@ export default function App() {
       {/* 两页常驻挂载、仅显隐切换：组件不卸载，Agent 任务轮询/文献库筛选与滚动位置都得以保留 */}
       <main>
         <div className={`page ${tab === "library" ? "" : "off"}`}>
-          <Library summary={summary} onOpenDetail={openDetail} detailId={paper} onChanged={refresh} />
+          <Library
+            summary={summary}
+            onOpenDetail={openDetail}
+            detailId={paper}
+            onChanged={refresh}
+            onStartAgent={startAgentTask}
+          />
         </div>
         <div className={`page ${tab === "assistant" ? "" : "off"}`}>
           <Assistant
@@ -102,6 +118,8 @@ export default function App() {
             onAgentBusy={setAgentBusy}
             onOpenDetail={openDetail}
             onLibChanged={refresh}
+            pendingTask={pendingTask}
+            onConsumePendingTask={() => setPendingTask(null)}
           />
         </div>
       </main>

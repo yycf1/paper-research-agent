@@ -191,6 +191,42 @@ def test_agent_confirm_on_running_task_409(monkeypatch, tmp_path):
     assert r.status_code == 409
 
 
+def test_agent_anchor_rejects_unknown_paper(monkeypatch, tmp_path):
+    """锚定不存在的论文 → 404，任务不启动。"""
+    client = _client(monkeypatch, tmp_path)
+    r = client.post("/api/agent/tasks", json={"task": "t", "anchor_source_id": "openalex:NOPE"})
+    assert r.status_code == 404
+
+
+def test_agent_anchor_scopes_tools_end_to_end(monkeypatch, tmp_path):
+    """锚定任务端到端：模型调 search_papers → 执行器拒绝（fatal），任务继续到收尾。"""
+    client = _client(monkeypatch, tmp_path)
+    lib = Library(tmp_path / "data" / "library.db")
+    lib.upsert_paper(Paper(source="openalex", source_id="openalex:W1", title="T-W1"))
+    lib.close()
+
+    script = [
+        _tool_resp("search_papers", '{"query": "gnn"}', "c1"),
+        _final("（收尾）"),
+    ]
+
+    def fake_chat(messages, *, tools, **_):
+        if not tools:
+            return _final("（收尾）")
+        return script.pop(0) if script else _final("（收尾）")
+
+    monkeypatch.setattr("paper_agent.llm.chat_with_tools", fake_chat)
+    tid = client.post(
+        "/api/agent/tasks",
+        json={"task": "续做复现", "anchor_source_id": "openalex:W1"},
+    ).json()["id"]
+    data = _wait_status(client, tid, {"done"})
+    assert data["anchor"] == "openalex:W1"
+    assert data["steps"][0]["tool"] == "search_papers"
+    assert data["steps"][0]["status"] == "fatal"
+    assert "锚定" in data["steps"][0]["detail"]
+
+
 def test_agent_tasks_list_and_history_readback(monkeypatch, tmp_path):
     """任务列表：live 优先；清空注册表（模拟重启）后由轨迹文件回读历史。"""
     client = _client(monkeypatch, tmp_path)

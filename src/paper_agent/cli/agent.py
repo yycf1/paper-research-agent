@@ -50,14 +50,21 @@ def agent(
     max_steps: int = typer.Option(0, "--max-steps", min=0, max=50, help="工具调用步数上限（0 = 读 config.yaml）"),
     token_budget: int = typer.Option(0, "--token-budget", min=0, help="token 预算（0 = 读 config.yaml）"),
     trace: bool = typer.Option(False, "--trace", help="把步骤轨迹持久化为 JSONL（data/traces/ 下）"),
+    anchor: str = typer.Option("", "--anchor", help="锚定论文 id：约束本任务只针对该论文工作区（检索/入库类工具被移除，防续任务漂移）"),
 ) -> None:
     """Agent 模式：模型自主决定调哪些工具、调多少轮（区别于 pa chat 的固定路由）。"""
     cfg = load_config()
     lib = _library(cfg)
     try:
+        anchor_id = (anchor or "").strip() or None
+        if anchor_id:
+            from paper_agent.server.routes import _resolve_sid  # 复用同一套 id 片段解析
+
+            anchor_id = _resolve_sid(anchor_id, lib)
+            console.print(f"[yellow]⚓ 任务锚定：{anchor_id}[/yellow]")
         store = VectorStore(_data_dir(cfg) / "db")
         retriever = Retriever(store) if store.count() > 0 else None
-        executor = ToolExecutor(lib=lib, retriever=retriever, cfg=cfg, confirm=_interactive_confirm)
+        executor = ToolExecutor(lib=lib, retriever=retriever, cfg=cfg, confirm=_interactive_confirm, anchor=anchor_id)
 
         trace_path = None
         if trace:
@@ -81,7 +88,7 @@ def agent(
         result = run_agent_task(
             task, executor=executor, cfg=cfg,
             max_steps=max_steps or None, token_budget=token_budget or None,
-            on_event=_on_event, trace_path=trace_path,
+            on_event=_on_event, trace_path=trace_path, anchor=anchor_id,
         )
         console.print()
         console.print(_STOP_REASON_MARK.get(result.stopped_reason, ""))
