@@ -36,6 +36,7 @@ pipeline:
 agent:
   max_steps: 8            # 工具调用步数熔断（触顶后强制无工具总结）
   token_budget: 120000    # 单任务 token 预算（超出触发软着陆）
+  context_keep_steps: 4   # 上下文滑动窗口（M28）：最近 N 步工具结果原样保留，更早的压成摘要桩；0 = 关闭压缩
   add_cap: 20             # add_papers 单次入库上限（超出直接拒绝，要求分批）
   confirm_threshold: 5    # 单次入库达到该数量需人工确认（HITL 钩子）
 

@@ -15,7 +15,10 @@
   执行——重复调用不会产生新结果，早拦早省；
 - 错误回填：工具失败不抛给用户，而是作为 status 消息回给模型自行纠正；
   其中 retryable_error（限流）由框架按 retry_after 自动重试一次。
-上下文保护：tool 消息超长截断，候选列表封顶（executor 侧）。
+上下文保护（M28 滑动窗口）：function-calling 协议要求 tool_calls 与 tool
+结果一一配对、不能从中间删消息，压缩只能改写老 tool 消息的内容——最近
+keep_steps 步的结果原样保留，滑出窗口的压成一句话摘要桩；单条 tool 消息
+另有 4000 字符截断（llm.tool_message），候选列表封顶在 executor 侧。
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from paper_agent.tools import ToolResult
 
 DEFAULT_MAX_STEPS = 8
 DEFAULT_TOKEN_BUDGET = 120_000
+DEFAULT_KEEP_STEPS = 4  # 最近 N 步工具结果原样保留；0 = 关闭压缩（全量回填的旧行为）
 MAX_AUTO_RETRY_WAIT = 30  # 自动重试等待上限（秒），防止 retry_after 异常大阻塞 CLI
 
 SYSTEM_PROMPT = """你是 paper-agent，一个论文研究 Agent。通过调用工具完成用户任务：
@@ -174,12 +178,56 @@ def _summarize_result(data: dict) -> str:
     return json.dumps(data, ensure_ascii=False)[:80]
 
 
-def _defaults_from_cfg(cfg: dict | None) -> tuple[int, int]:
+def _defaults_from_cfg(cfg: dict | None) -> tuple[int, int, int]:
     agent_cfg = (cfg or {}).get("agent") or {}
+    keep = agent_cfg.get("context_keep_steps")
     return (
         int(agent_cfg.get("max_steps") or DEFAULT_MAX_STEPS),
         int(agent_cfg.get("token_budget") or DEFAULT_TOKEN_BUDGET),
+        DEFAULT_KEEP_STEPS if keep is None else int(keep),  # 0 合法：关闭压缩
     )
+
+
+def _stub_tool_content(msg: dict) -> None:
+    """把一条滑出窗口的老 tool 消息原地改写为摘要桩。
+
+    只改 content，角色与 tool_call_id 不动——配对关系是 function-calling
+    协议的硬约束，抽掉消息或改 id 都会被 API 拒绝。status/error 保留
+    （错误本身短且是推进线索），data 换成一句话摘要（大对象在这里）。
+    """
+    try:
+        payload = json.loads(msg["content"])
+    except ValueError:
+        payload = None  # tool_message 截断过的内容不可解析
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        summary = _summarize_result(data) if isinstance(data, dict) else str(data)[:80]
+        stub: dict = {"status": payload.get("status", "ok")}
+        if payload.get("error"):
+            stub["error"] = payload["error"]
+        stub["note"] = (
+            f"早前步骤结果已压缩为摘要：{summary}。信息已在此前的推理中消化，继续推进任务即可。"
+        )
+    else:
+        stub = {"status": "ok", "note": "早前步骤结果已压缩（原内容超长不可解析），关键信息已在此前的推理中消化。"}
+    msg["content"] = json.dumps(stub, ensure_ascii=False)
+
+
+def _compact_context(
+    messages: list[dict], spans: list[list[int]], keep_steps: int, done: int
+) -> int:
+    """滑动窗口压缩：窗口外步骤的工具结果压成摘要桩，返回新的已压缩水位线。
+
+    spans 记录每步 tool 消息在 messages 里的下标（只追加不删除，下标稳定）；
+    done 是已压缩到的步骤数，幂等——重复调用不会二次改写。
+    """
+    if keep_steps <= 0:
+        return done
+    target = max(done, len(spans) - keep_steps)
+    for si in range(done, target):
+        for idx in spans[si]:
+            _stub_tool_content(messages[idx])
+    return target
 
 
 def run_agent_task(
@@ -189,6 +237,7 @@ def run_agent_task(
     cfg: dict | None = None,
     max_steps: int | None = None,
     token_budget: int | None = None,
+    keep_steps: int | None = None,
     chat_fn: Callable[..., ChatResponse] | None = None,
     on_event: Callable[[AgentStep], None] | None = None,
     trace_path: Path | str | None = None,
@@ -196,18 +245,24 @@ def run_agent_task(
 ) -> AgentRunResult:
     """执行一个 Agent 任务。chat_fn 可注入（测试用假模型）；默认走真实 API。
 
-    max_steps / token_budget 缺省读 config.yaml 的 agent 节；trace_path 给出时
-    把任务、每步工具调用、最终结果以 JSONL 逐步落盘。永不向上抛异常：
-    LLM 故障转成 stopped_reason=error 的结果，由调用方渲染。
+    max_steps / token_budget / keep_steps 缺省读 config.yaml 的 agent 节；
+    trace_path 给出时把任务、每步工具调用、最终结果以 JSONL 逐步落盘。
+    永不向上抛异常：LLM 故障转成 stopped_reason=error 的结果，由调用方渲染。
+
+    keep_steps（M28）：上下文滑动窗口——每步重放全部历史是 function-calling
+    循环的成本大头，最近 keep_steps 步的工具结果原样保留，更早的压成摘要桩
+    （配对结构不动）；0 关闭压缩。与 token_budget 分工：预算按累计用量在
+    下一轮前拦截（熔断），压缩降低每轮 prompt 的线性增长（省算）。
 
     anchor（M26）：任务锚定论文 id——约束注入系统提示，配合执行器侧的
     工具作用域（executor 锚定时隐藏并拒绝检索/入库/方向推荐），把"专注
     本论文"从 prompt 建议升级为代码强制。锚定信息来自任务发起方（详情页
     续做按钮 / API 显式传入），不靠模型自己记住上一轮。
     """
-    cfg_max_steps, cfg_budget = _defaults_from_cfg(cfg)
+    cfg_max_steps, cfg_budget, cfg_keep = _defaults_from_cfg(cfg)
     max_steps = max_steps or cfg_max_steps
     token_budget = token_budget or cfg_budget
+    keep_steps = cfg_keep if keep_steps is None else keep_steps
 
     trace = _TraceWriter(Path(trace_path), task, cfg) if trace_path else None
     if chat_fn is None:
@@ -229,6 +284,8 @@ def run_agent_task(
     steps: list[AgentStep] = []
     usage_total = {"prompt": 0, "completion": 0}
     guard = _RepeatGuard()
+    step_spans: list[list[int]] = []  # 每步 tool 消息的下标（压缩窗口的记账单位）
+    stubbed_steps = 0
 
     def _accumulate(usage: dict) -> None:
         usage_total["prompt"] += usage.get("prompt", 0) or 0
@@ -260,6 +317,7 @@ def run_agent_task(
         # 本轮声明了工具调用：assistant 消息（含 tool_calls）必须原样回进上下文，
         # 其后每个工具结果靠 tool_call_id 与调用一一配对——这是 function-calling 协议的核心
         messages.append(assistant_message(resp.content, resp.tool_calls))
+        tool_spans: list[int] = []
         for tc in resp.tool_calls:
             nth = guard.check(_RepeatGuard.signature(tc.name, tc.arguments))
             tool_nth = guard.tool_nth(tc.name)
@@ -307,6 +365,9 @@ def run_agent_task(
             elif tool_nth >= _RepeatGuard.WARN_TOOL_AT:
                 payload["warning"] = guard.tool_warning(tc.name, tool_nth)
             messages.append(tool_message(tc.id, payload))
+            tool_spans.append(len(messages) - 1)
+        step_spans.append(tool_spans)
+        stubbed_steps = _compact_context(messages, step_spans, keep_steps, stubbed_steps)
 
     # 步数/预算熔断：不允许再调工具，让模型基于已有信息收尾（软着陆，不硬报错）
     messages.append({"role": "user",

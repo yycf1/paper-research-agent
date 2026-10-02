@@ -400,3 +400,138 @@ def test_trace_persisted_jsonl(lib, monkeypatch, tmp_path):
     assert types.count("step") == 1
     assert types[-1] == "final"
     assert lines[-1]["stopped_reason"] == "final"
+
+
+# ---------------------------------------------------------------------------
+# M28 上下文滑动窗口：窗口外工具结果压成摘要桩，配对结构不动
+# ---------------------------------------------------------------------------
+
+
+def _tool_msgs(messages: list[dict]) -> dict[str, dict]:
+    """按 tool_call_id 索引最后一条捕获上下文里的 tool 消息。"""
+    return {m["tool_call_id"]: m for m in messages if m["role"] == "tool"}
+
+
+def test_sliding_window_stubs_old_results(lib, monkeypatch):
+    """6 步 keep=4：最早 2 步压成摘要桩，窗口内 4 步原样，协议配对完好。"""
+    ex = _executor(lib, monkeypatch)
+    captured: list = []
+    chat_fn = _scripted_chat([
+        _tool_resp("library_status", "{}", "c1"),
+        _tool_resp("explore_directions", "{}", "c2"),
+        _tool_resp("library_status", '{"a": 1}', "c3"),
+        _tool_resp("explore_directions", '{"b": 2}', "c4"),
+        _tool_resp("library_status", '{"c": 3}', "c5"),
+        _tool_resp("explore_directions", '{"d": 4}', "c6"),
+    ], captured)
+
+    result = run_agent_task(TASK, executor=ex, chat_fn=chat_fn, max_steps=8, keep_steps=4)
+    assert result.stopped_reason == "final"
+
+    msgs, _tools = captured[-1]  # 最终回答轮看到的完整上下文
+    tools = _tool_msgs(msgs)
+    assert set(tools) == {"c1", "c2", "c3", "c4", "c5", "c6"}  # 消息没被删，只被改写
+    # 窗口外（c1/c2）：data 没了，换成摘要桩
+    assert "已压缩为摘要" in tools["c1"]["content"]
+    assert "已压缩为摘要" in tools["c2"]["content"]
+    assert '"data"' not in tools["c1"]["content"] and '"data"' not in tools["c2"]["content"]
+    stub = json.loads(tools["c1"]["content"])
+    assert stub["status"] == "ok" and "库内共" in stub["note"]
+    # 窗口内（c3~c6）：原样保留
+    for cid in ("c3", "c4", "c5", "c6"):
+        assert '"data"' in tools[cid]["content"]
+        assert "已压缩" not in tools[cid]["content"]
+    # 配对协议：每条 tool 消息紧跟声明了对应 tool_call 的 assistant 消息
+    for i, m in enumerate(msgs):
+        if m["role"] != "tool":
+            continue
+        prev = msgs[i - 1]
+        assert prev["role"] == "assistant" and prev.get("tool_calls")
+        assert any(tc["id"] == m["tool_call_id"] for tc in prev["tool_calls"])
+    # assistant 消息一律不动（模型推理与调用声明都在）
+    assert all(m.get("tool_calls") for m in msgs if m["role"] == "assistant")
+
+
+def test_sliding_window_parallel_calls_stubbed_together(lib, monkeypatch):
+    """同一步并行两个 tool_calls：属于同一窗口单元，一起压成桩。"""
+    ex = _executor(lib, monkeypatch)
+    captured: list = []
+    parallel = ChatResponse(
+        content=None,
+        tool_calls=[
+            ToolCall(id="pa", name="library_status", arguments="{}"),
+            ToolCall(id="pb", name="explore_directions", arguments="{}"),
+        ],
+        usage={"prompt": 100, "completion": 20, "model": "fake"},
+    )
+    chat_fn = _scripted_chat([
+        parallel,
+        _tool_resp("library_status", '{"x": 1}', "c2"),
+        _tool_resp("explore_directions", '{"y": 2}', "c3"),
+        _tool_resp("library_status", '{"z": 3}', "c4"),
+    ], captured)
+
+    run_agent_task(TASK, executor=ex, chat_fn=chat_fn, max_steps=6, keep_steps=2)
+    msgs, _ = captured[-1]
+    tools = _tool_msgs(msgs)
+    for cid in ("pa", "pb", "c2"):  # 4 步 keep=2：前两步（含并行那条）整体出窗
+        assert "已压缩为摘要" in tools[cid]["content"]
+    for cid in ("c3", "c4"):
+        assert '"data"' in tools[cid]["content"]
+
+
+def test_sliding_window_stub_preserves_error(lib, monkeypatch):
+    """失败结果滑出窗口：status/error 保留在桩里，推进线索不丢。"""
+    ex = _executor(lib, monkeypatch)
+    captured: list = []
+    chat_fn = _scripted_chat([
+        _tool_resp("library_status", "not-json", "c1"),  # 参数非 JSON → fatal
+        _tool_resp("explore_directions", "{}", "c2"),
+        _tool_resp("library_status", '{"a": 1}', "c3"),
+        _tool_resp("explore_directions", '{"b": 2}', "c4"),
+    ], captured)
+
+    run_agent_task(TASK, executor=ex, chat_fn=chat_fn, max_steps=6, keep_steps=2)
+    msgs, _ = captured[-1]
+    stub = json.loads(_tool_msgs(msgs)["c1"]["content"])
+    assert stub["status"] == "fatal"
+    assert "参数不是合法 JSON" in stub["error"]
+    assert "已压缩为摘要" in stub["note"]
+
+
+def test_sliding_window_disabled_with_keep_steps_zero(lib, monkeypatch):
+    """keep_steps=0：关闭压缩，全量回填的旧行为（A/B 对比基线）。"""
+    ex = _executor(lib, monkeypatch)
+    captured: list = []
+    chat_fn = _scripted_chat([
+        _tool_resp("library_status", "{}", "c1"),
+        _tool_resp("explore_directions", "{}", "c2"),
+        _tool_resp("library_status", '{"a": 1}', "c3"),
+        _tool_resp("explore_directions", '{"b": 2}', "c4"),
+    ], captured)
+
+    run_agent_task(TASK, executor=ex, chat_fn=chat_fn, max_steps=6, keep_steps=0)
+    msgs, _ = captured[-1]
+    tools = _tool_msgs(msgs)
+    for cid in ("c1", "c2", "c3", "c4"):
+        assert '"data"' in tools[cid]["content"]
+        assert "已压缩" not in tools[cid]["content"]
+
+
+def test_context_keep_steps_from_cfg(lib, monkeypatch):
+    """cfg 的 agent.context_keep_steps 生效：不显式传参也走压缩。"""
+    ex = _executor(lib, monkeypatch)
+    captured: list = []
+    chat_fn = _scripted_chat([
+        _tool_resp("library_status", "{}", "c1"),
+        _tool_resp("explore_directions", "{}", "c2"),
+        _tool_resp("library_status", '{"a": 1}', "c3"),
+    ], captured)
+    cfg = {"agent": {"max_steps": 6, "token_budget": 100000, "context_keep_steps": 1}}
+
+    run_agent_task(TASK, executor=ex, chat_fn=chat_fn, cfg=cfg)
+    msgs, _ = captured[-1]
+    tools = _tool_msgs(msgs)
+    assert "已压缩为摘要" in tools["c1"]["content"]  # 3 步 keep=1 → 前两步出窗
+    assert "已压缩为摘要" in tools["c2"]["content"]
+    assert '"data"' in tools["c3"]["content"]
