@@ -34,6 +34,7 @@
 | M25 真实数据集复现 | ✅ 完成（CommonsenseQA 官方数据落工作区为复现资产（9,741 训练 / 1,221 验证）；五轮 Agent 协作把合成原型升级为真实数据版 run_real.py——期间记录了 source_id 未锚定导致的任务漂移与清理、数值梯度 2,470 万次前向的死因定位、stdout 块缓冲的超时假象、解析梯度 300 倍加速；最终在真实数据上测得全量验证准确率 22.03%（loss 正常下降、稳定高于随机 20%），差距来源（无 ConceptNet/Wikipedia 知识源、冻结编码器、MLP-only 最小口径）在复现方案资产评估中已写明；17 条运行轨迹含全部失败记录，浏览器「复现」页签逐条可查） |
 | M26 任务锚定 + 工具作用域 | ✅ 完成（M25 漂移事故的系统性修复，prompt 建议升级为代码强制：任务 API `anchor_source_id` 校验论文存在，循环层注入锚定约束，执行器**移除并拒绝**检索/入库/方向推荐类工具（最小权限工具集，specs_for 隐藏 + execute 拦截双层防御）；详情页「🤖 交给 Agent 续做（锚定本论文）」一键发起——预填任务 + 锚定提示条，锚随提交走不污染后续任务；CLI `--anchor` 同步；run_code 子进程改 `-u` 无缓冲，超时也能拿到部分输出（修 M25 缓冲假象）；真机 9 步零漂移） |
 | M27 MCP elicitation 确认门 | ✅ 完成（HITL 确认从环境变量升级为宿主真弹窗：MCP 2026-07-28 input_required 流——confirm 首触返回 `InputRequiredResult` 内嵌 elicitation 表单，宿主弹窗后客户端带 `input_responses + request_state` 重试原请求，服务端按人的决定放行/拒绝；request_state 归属校验防错配，decline/cancel/响应缺失失败关闭，表单 approve=false 否决 accept；`PAPER_AGENT_CONFIRM` 降级为运维开关与老宿主逃生口；协议层控制流信号用 BaseException 穿透 run_tool 四态分类器；SDK 内存流协议测试 5→10 + 真实 stdio 子进程冒烟（协商 2026-07-28 全回路跑通）） |
+| M28 Agent 上下文滑动窗口 | ✅ 完成（function-calling 循环每步重放全部历史、累计计费 O(N²) 的根治：最近 `context_keep_steps`（默认 4）步工具结果原样保留，滑出窗口的压成一句话摘要桩——配对协议不允许从中间删消息，压缩只改写老 tool 消息内容，status/error 保留、data 换摘要；span 记账支持并行 tool_calls 整体出窗，幂等水位线每步增量压缩；与 token_budget 分工：预算管熔断兜底、窗口管每轮 prompt 省算；5 个新用例断言窗口语义与配对结构，全量 227 绿） |
 
 ## 快速开始
 
@@ -116,6 +117,10 @@ python -m uv run pa agent "库里关于医学影像的论文都用了什么数�
 
 - **步数熔断**：`--max-steps`（默认 8）触顶后禁止工具、强制总结（软着陆）；
 - **token 预算**：每轮调用前检查累计用量（默认 120k），超限软着陆；
+- **上下文滑动窗口（M28）**：function-calling 循环每步重放全部历史，累计计费
+  O(N²)——最近 `context_keep_steps`（默认 4）步工具结果原样保留，更早的压成
+  一句话摘要桩（配对协议不允许删消息，只改写老 tool 内容），每轮 prompt 增长
+  从线性变有界；并行 tool_calls 整体出窗；`0` 可关闭；
 - **循环检测**：同 (工具名, 参数) 签名第 2 次执行时回填警告、第 3 次直接拒绝执行；
 - **入库护栏**：单次超 `add_cap`（20）直接拒绝要求分批；达 `confirm_threshold`（5）
   触发人工确认（y/N）——`run_code` 代码执行无条件复用同一确认钩子；
