@@ -33,6 +33,7 @@
 | M24 复现工作区可视化 | ✅ 完成（run_code 真实执行追加写 `runs.jsonl` 运行档案——拒绝的执行不留痕；`GET /papers/{id}/repro` + `/repro/file` 两个只读端点，文件名白名单与执行器同一套；详情页「复现」页签 = 方案 + 工作区文件点击看代码 + 运行记录 exit 码徽章与可展开输出，旗舰功能复现证据链首次全程浏览器可见；顺手修 M16 遗留的确认门「入库」硬编码文案，代码执行确认现正确显示「请求运行代码」） |
 | M25 真实数据集复现 | ✅ 完成（CommonsenseQA 官方数据落工作区为复现资产（9,741 训练 / 1,221 验证）；五轮 Agent 协作把合成原型升级为真实数据版 run_real.py——期间记录了 source_id 未锚定导致的任务漂移与清理、数值梯度 2,470 万次前向的死因定位、stdout 块缓冲的超时假象、解析梯度 300 倍加速；最终在真实数据上测得全量验证准确率 22.03%（loss 正常下降、稳定高于随机 20%），差距来源（无 ConceptNet/Wikipedia 知识源、冻结编码器、MLP-only 最小口径）在复现方案资产评估中已写明；17 条运行轨迹含全部失败记录，浏览器「复现」页签逐条可查） |
 | M26 任务锚定 + 工具作用域 | ✅ 完成（M25 漂移事故的系统性修复，prompt 建议升级为代码强制：任务 API `anchor_source_id` 校验论文存在，循环层注入锚定约束，执行器**移除并拒绝**检索/入库/方向推荐类工具（最小权限工具集，specs_for 隐藏 + execute 拦截双层防御）；详情页「🤖 交给 Agent 续做（锚定本论文）」一键发起——预填任务 + 锚定提示条，锚随提交走不污染后续任务；CLI `--anchor` 同步；run_code 子进程改 `-u` 无缓冲，超时也能拿到部分输出（修 M25 缓冲假象）；真机 9 步零漂移） |
+| M27 MCP elicitation 确认门 | ✅ 完成（HITL 确认从环境变量升级为宿主真弹窗：MCP 2026-07-28 input_required 流——confirm 首触返回 `InputRequiredResult` 内嵌 elicitation 表单，宿主弹窗后客户端带 `input_responses + request_state` 重试原请求，服务端按人的决定放行/拒绝；request_state 归属校验防错配，decline/cancel/响应缺失失败关闭，表单 approve=false 否决 accept；`PAPER_AGENT_CONFIRM` 降级为运维开关与老宿主逃生口；协议层控制流信号用 BaseException 穿透 run_tool 四态分类器；SDK 内存流协议测试 5→10 + 真实 stdio 子进程冒烟（协商 2026-07-28 全回路跑通）） |
 
 ## 快速开始
 
@@ -137,17 +138,20 @@ Claude Desktop（`claude_desktop_config.json`）或 Cursor（`mcp.json`）：
   "mcpServers": {
     "paper-agent": {
       "command": "E:\\path\\to\\.venv\\Scripts\\pa.exe",
-      "args": ["mcp"],
-      "env": { "PAPER_AGENT_CONFIRM": "approve" }
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-- `PAPER_AGENT_CONFIRM`：stdio 场景无可交互前端，HITL 确认插座按此环境变量
-  决断（`approve` 放行 / `reject` 拒绝），每次触发写 stderr 审计日志；
-  `add_cap` 等硬护栏不受影响。接入后在 host 里即可「检索并入库 3 篇 GNN 综述」、
-  「库里医学影像论文都用了什么数据集」——同一个文献库，CLI / Web / MCP 三入口共享。
+- **HITL 确认（M27）**：支持 input_required 的宿主（MCP 2026-07-28）里，
+  `add_papers`（≥5 篇）与 `run_code` 触发确认门时宿主会弹**真实确认窗**——
+  人的决定随重试请求回到服务端，拒绝则工具返回 declined 语义；`decline`/
+  `cancel`/响应缺失一律失败关闭。`PAPER_AGENT_CONFIRM=approve|reject`
+  保留为运维开关与老宿主逃生口（显式设置时优先于弹窗），每次触发写
+  stderr 审计日志；`add_cap` 等硬护栏不受影响。接入后在 host 里即可
+  「检索并入库 3 篇 GNN 综述」、「库里医学影像论文都用了什么数据集」——
+  同一个文献库，CLI / Web / MCP 三入口共享。
 
 ## 评测体系
 
