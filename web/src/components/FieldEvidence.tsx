@@ -10,7 +10,7 @@ function valueText(fact: FieldFact) {
   if (typeof value === "string") return value;
   const parts = [String(value.name ?? "")];
   if (value.value !== null && value.value !== undefined && value.value !== "") parts.push(String(value.value));
-  for (const [key, label] of [["split", "划分"], ["dataset", "数据集"], ["task", "任务"], ["unit", "单位"], ["baseline", "基线"]]) {
+  for (const [key, label] of [["split", "划分"], ["dataset", "数据集"], ["task", "任务"], ["unit", "单位"], ["definition", "定义"], ["model", "模型"], ["evaluation_protocol", "评估协议"], ["baseline", "基线"]]) {
     if (value[key] !== null && value[key] !== undefined && value[key] !== "") parts.push(`${label}：${value[key]}`);
   }
   return parts.join("；");

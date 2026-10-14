@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Paper, type SearchReply, type StatusSummary, type TagsReply } from "../api";
 import PaperDetail from "../components/PaperDetail";
@@ -41,12 +42,20 @@ export default function Library({
   onOpenDetail,
   onChanged,
   onStartAgent,
+  view = "library",
+  groupHost,
+  onDiscover,
+  onResearch,
 }: {
   summary: StatusSummary | null;
   detailId: string | null;
   onOpenDetail: (id: string | null) => void;
   onChanged: () => void;
   onStartAgent: (task: string, anchor: string) => void;
+  view?: "library" | "discover";
+  groupHost?: HTMLElement | null;
+  onDiscover?: () => void;
+  onResearch?: (ids: string[], compare: boolean) => void;
 }) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [total, setTotal] = useState(0);
@@ -113,12 +122,7 @@ export default function Library({
     }
   }, [status, tag, untaggedOnly, q]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-  useEffect(() => {
-    loadTags();
-  }, [loadTags]);
+  useEffect(() => { void load(); void loadTags(); }, [load, loadTags, summary]);
 
   // 库内筛选防抖：每个按键一次请求在 200 条 ×  SQLite 上是浪费
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -346,11 +350,97 @@ export default function Library({
 
   const freshCount = preview?.candidates.filter((c) => !c.duplicate_of).length ?? 0;
   const groups = tagInfo?.tags ?? [];
+  const groupPanel = (<div className="lib-groups" onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement).tagName === "SPAN") { e.preventDefault(); (e.target as HTMLElement).click(); } }}>
+          <span className="hint row-label">分组</span>
+          <div className="chips">
+            <span
+              role="button" tabIndex={0}
+              className={`chip ${tag === "" && !untaggedOnly ? "on" : ""}`}
+              onClick={() => {
+                setTag("");
+                setUntaggedOnly(false);
+              }}
+            >
+              不限
+            </span>
+            {groups.slice(0, 12).map((g) => (
+              <span
+                key={g.name}
+                role="button" tabIndex={0}
+                className={`chip ${tag === g.name && !untaggedOnly ? "on" : ""}`}
+                onClick={() => {
+                  setUntaggedOnly(false);
+                  setTag(g.name);
+                }}
+                title={g.name}
+              >
+                {g.name.length > 18 ? g.name.slice(0, 18) + "…" : g.name} {g.count}
+                <span
+                  className="grp-act"
+                  title="重命名"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    doRenameGroup(g.name);
+                  }}
+                >
+                  ✎
+                </span>
+                <span
+                  className="grp-act"
+                  title="删除分组（论文回未分组）"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    doDeleteGroup(g.name, g.count);
+                  }}
+                >
+                  ✕
+                </span>
+              </span>
+            ))}
+            {(tagInfo?.untagged ?? 0) > 0 && (
+              <span
+                className={`chip ${untaggedOnly ? "on" : ""}`}
+                role="button" tabIndex={0}
+                onClick={() => {
+                  setTag("");
+                  setUntaggedOnly(true);
+                }}
+                title="检索全量入库等来源不明的论文"
+              >
+                未分组 {tagInfo!.untagged}
+              </span>
+            )}
+            {creatingGroup ? (
+              <span className="chip" onClick={(e) => e.stopPropagation()}>
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="分组名"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") doCreateGroup();
+                    if (e.key === "Escape") setCreatingGroup(false);
+                  }}
+                  style={{ width: 110, border: "none", background: "transparent", outline: "none" }}
+                />
+                <span className="grp-act" title="确定" onClick={doCreateGroup}>✓</span>
+                <span className="grp-act" title="取消" onClick={() => setCreatingGroup(false)}>✕</span>
+              </span>
+            ) : (
+              <span className="chip chip-new" role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={() => setCreatingGroup(true)}>
+                ＋ 新建分组
+              </span>
+            )}
+          </div>
+        </div>);
 
   return (
-    <div className={`library${detailId ? " with-detail" : ""}`}>
+    <div className={`library ${view === "discover" ? "discovery-view" : "library-view"}${detailId ? " with-detail" : ""}`}>
       <div className="list-pane">
-        <div className="lib-head">
+        <div className="workspace-heading"><div><span className="eyebrow">{view === "library" ? "YOUR RESEARCH LIBRARY" : "DISCOVER PAPERS"}</span><h1>{view === "library" ? "文献库" : "发现论文"}</h1><p>{view === "library" ? "把论文整理成可以持续追问的研究资料。" : "检索公开学术来源，预览后选择收入文献库。"}</p></div><div className="heading-actions"><label className="btn-outline upload-btn">{uploading ? "导入中…" : "导入文献"}<input type="file" accept=".pdf,.docx" hidden disabled={uploading} aria-label="导入 PDF 或 DOCX" onChange={e => { const file = e.target.files?.[0]; if (file) void doUpload(file); e.currentTarget.value = ""; }} /></label>{view === "library" && <button className="primary" onClick={onDiscover}>＋ 发现论文</button>}</div></div>
+        {view === "discover" && <div className="discovery-guide"><span>01 搜索主题</span><span>02 预览候选</span><span>03 选择入库</span></div>}
+        {view === "discover" && <div className="lib-head">
           <div className="lib-row main">
             <input
               type="text"
@@ -363,20 +453,6 @@ export default function Library({
             <button className="primary" disabled={searching || !searchQuery.trim() || sources.length === 0} onClick={doSearch}>
               {searching ? "检索中…" : "检索"}
             </button>
-            <label className="btn-outline upload-btn">
-              {uploading ? "上传中…" : "上传 PDF/DOCX"}
-              <input
-                type="file"
-                accept=".pdf,.docx"
-                hidden
-                disabled={uploading}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) doUpload(f);
-                  e.currentTarget.value = "";
-                }}
-              />
-            </label>
           </div>
           <div className="lib-row sub">
             <span className="hint row-label">来源</span>
@@ -447,8 +523,9 @@ export default function Library({
               </label>
             </div>
           )}
-        </div>
+        </div>}
         <div className="lib-filter">
+          <div className="library-filter-row">
           <input
             type="text"
             className="lib-q"
@@ -456,6 +533,8 @@ export default function Library({
             value={qInput}
             onChange={(e) => setQInput(e.target.value)}
           />
+          <label className="library-group-select">分组 <select aria-label="筛选文献分组" value={untaggedOnly ? "__untagged__" : tag} onChange={e => { setUntaggedOnly(e.target.value === "__untagged__"); setTag(e.target.value === "__untagged__" ? "" : e.target.value); }}><option value="">全部分组</option>{groups.map(g => <option key={g.name} value={g.name}>{g.name}（{g.count}）</option>)}<option value="__untagged__">未分组</option></select></label>
+          </div>
           <div className="seg">
             <button className={`seg-item ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>
               全部 {summary?.total ?? ""}
@@ -467,90 +546,13 @@ export default function Library({
             ))}
           </div>
         </div>
-        <div className="lib-groups">
-          <span className="hint row-label">分组</span>
-          <div className="chips">
-            <span
-              className={`chip ${tag === "" && !untaggedOnly ? "on" : ""}`}
-              onClick={() => {
-                setTag("");
-                setUntaggedOnly(false);
-              }}
-            >
-              不限
-            </span>
-            {groups.slice(0, 12).map((g) => (
-              <span
-                key={g.name}
-                className={`chip ${tag === g.name && !untaggedOnly ? "on" : ""}`}
-                onClick={() => {
-                  setUntaggedOnly(false);
-                  setTag(g.name);
-                }}
-                title={g.name}
-              >
-                {g.name.length > 18 ? g.name.slice(0, 18) + "…" : g.name} {g.count}
-                <span
-                  className="grp-act"
-                  title="重命名"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    doRenameGroup(g.name);
-                  }}
-                >
-                  ✎
-                </span>
-                <span
-                  className="grp-act"
-                  title="删除分组（论文回未分组）"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    doDeleteGroup(g.name, g.count);
-                  }}
-                >
-                  ✕
-                </span>
-              </span>
-            ))}
-            {(tagInfo?.untagged ?? 0) > 0 && (
-              <span
-                className={`chip ${untaggedOnly ? "on" : ""}`}
-                onClick={() => {
-                  setTag("");
-                  setUntaggedOnly(true);
-                }}
-                title="检索全量入库等来源不明的论文"
-              >
-                未分组 {tagInfo!.untagged}
-              </span>
-            )}
-            {creatingGroup ? (
-              <span className="chip" onClick={(e) => e.stopPropagation()}>
-                <input
-                  autoFocus
-                  type="text"
-                  placeholder="分组名"
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") doCreateGroup();
-                    if (e.key === "Escape") setCreatingGroup(false);
-                  }}
-                  style={{ width: 110, border: "none", background: "transparent", outline: "none" }}
-                />
-                <span className="grp-act" title="确定" onClick={doCreateGroup}>✓</span>
-                <span className="grp-act" title="取消" onClick={() => setCreatingGroup(false)}>✕</span>
-              </span>
-            ) : (
-              <span className="chip chip-new" style={{ cursor: "pointer" }} onClick={() => setCreatingGroup(true)}>
-                ＋ 新建分组
-              </span>
-            )}
-          </div>
-        </div>
+        {view === "library" && (groupHost ? createPortal(groupPanel, groupHost) : groupPanel)}
         {checked.size > 0 && (
           <div className="lib-bulk">
             <span className="bulk-count">已选 {checked.size} 篇</span>
+            <button className="primary" disabled={checked.size < 2 || checked.size > 6} onClick={() => onResearch?.([...checked], true)}>比较所选论文</button>
+            <button disabled={checked.size > 6} onClick={() => onResearch?.([...checked], false)}>向所选论文提问</button>
+            {checked.size > 6 && <span className="hint">每次研究最多选择 6 篇</span>}
             <select value={bulkTarget} onChange={(e) => applyBulk(e.target.value)} disabled={bulkBusy}>
               <option value="">移动到分组…</option>
               {groups.map((g) => (
@@ -580,9 +582,9 @@ export default function Library({
             <div className="empty-state">
               <div className="es-icon">📚</div>
               <div className="es-title">
-                {untaggedOnly ? "没有未分组的论文" : tag ? "该分组下暂无论文" : "文献库还是空的"}
+                {q || status ? "没有符合筛选条件的论文" : untaggedOnly ? "没有未分组的论文" : tag ? "该分组下暂无论文" : "文献库还是空的"}
               </div>
-              <div className="es-sub">用上方主题检索一批论文入库，或上传本地 PDF/DOCX 开始精读。</div>
+              <div className="es-sub">{q || status || tag || untaggedOnly ? "当前筛选没有匹配的论文，试着放宽条件。" : "导入 PDF/DOCX，或到「发现论文」选择资料；进入论文后开始处理与精读。"}</div>
             </div>
           ) : (
             <table className="papers">
@@ -591,11 +593,11 @@ export default function Library({
                   <th style={{ width: 34 }}>
                     <input type="checkbox" checked={allVisibleChecked} onChange={toggleAllVisible} title="全选本页" />
                   </th>
+                  <th>论文与研究主题（{total} 篇）</th>
                   <th style={{ width: 86 }}>状态</th>
                   <th style={{ width: 56 }}>年份</th>
                   <th style={{ width: 56 }}>被引</th>
                   <th style={{ width: 60 }}>全文</th>
-                  <th>标题（{total} 篇）</th>
                 </tr>
               </thead>
               <tbody>
@@ -608,9 +610,16 @@ export default function Library({
                     <td onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
+                        aria-label={`选择 ${p.title}`}
                         checked={checked.has(p.source_id)}
                         onChange={() => toggleChecked(p.source_id)}
                       />
+                    </td>
+                    <td className="title-cell">
+                      <button className="paper-title" onClick={e => { e.stopPropagation(); onOpenDetail(p.source_id); }}>{p.title}</button>
+                      <div className="paper-authors hint">{p.authors.slice(0, 3).join(" · ") || p.source}</div>
+                      {p.tag && <div className="hint paper-tagline">分组：{p.tag}</div>}
+                      {p.error && <div className="paper-err" title={p.error}>⚠ {fmtError(p.error)}</div>}
                     </td>
                     <td>
                       <span className={`tag status-${p.status}`}>
@@ -621,11 +630,6 @@ export default function Library({
                     <td className="num">{p.citations ?? "—"}</td>
                     <td className="num" title={p.has_pdf ? "已下载全文" : p.abstract_only ? "仅摘要入库" : "未获取全文"}>
                       {p.has_pdf ? "✓" : p.abstract_only ? "摘要" : "—"}
-                    </td>
-                    <td className="title-cell">
-                      <div className="paper-title">{p.title}</div>
-                      {p.tag && <div className="hint paper-tagline">分组：{p.tag}</div>}
-                      {p.error && <div className="paper-err" title={p.error}>⚠ {fmtError(p.error)}</div>}
                     </td>
                   </tr>
                 ))}
@@ -641,7 +645,7 @@ export default function Library({
           )}
         </div>
       </div>
-      {detailId ? (
+      {view === "library" && (detailId ? (
         <PaperDetail
           key={detailId}
           id={detailId}
@@ -658,11 +662,11 @@ export default function Library({
           <div className="es-icon">🗂</div>
           <div className="es-sub">点击左侧论文，查看详情、精读报告与实验结构</div>
         </div>
-      )}
+      ))}
 
       {preview && (
-        <div className="modal-mask" onClick={() => setPreview(null)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className={view === "discover" ? "discovery-results" : "modal-mask"} onClick={() => setPreview(null)}>
+          <div className={view === "discover" ? "surface-card discovery-result-card" : "modal"} onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <div>
                 <div className="modal-title">

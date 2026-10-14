@@ -24,6 +24,8 @@ export interface PaperDetail extends Paper {
   report: string | null;
   repro_plan: string | null;
   full_text: string | null;
+  index_state?: { status: "ready" | "stale" | "legacy" | "unindexed" | "unknown"; chunk_count: number | null; can_ask: boolean; mode?: string };
+  knowledge_current?: boolean;
 }
 
 /** extraction/normalize_experiment 的 schema（M2），字段值宽松处理。 */
@@ -100,6 +102,15 @@ export interface SourceRef {
 export interface AskReply {
   answer: string;
   sources: SourceRef[];
+  answer_status?: string;
+  citation_check?: { status: string; semantic_support: string } | null;
+  retrieval_notes?: string[];
+}
+
+export interface ComparisonReply {
+  papers: { paper_id: string; title: string; field_evidence: BoundFields }[];
+  note?: string;
+  comparability?: { pairs: { paper_ids: string[]; metrics: { left_metric: string | null; right_metric: string | null; missing_conditions: string[]; different_conditions: string[] }[] }[] };
 }
 
 export interface ChatReply {
@@ -194,6 +205,8 @@ export interface AgentTaskState {
   stopped_reason: "final" | "max_steps" | "token_budget" | "error";
   usage: { prompt: number; completion: number };
   error: string;
+  allowed_paper_ids?: string[] | null;
+  anchor?: string;
 }
 
 /** 任务历史条目（M23）：live=注册表内存态；否则来自磁盘轨迹回读。 */
@@ -331,8 +344,10 @@ export const api = {
     fd.append("file", file);
     return req<{ is_new: boolean; paper: Paper }>("/papers/upload", { method: "POST", body: fd }, 300_000);
   },
-  ask: (question: string, paper_id?: string) =>
-    req<AskReply>("/ask", { method: "POST", body: JSON.stringify({ question, paper_id }) }),
+  ask: (question: string, paper_id?: string, paper_ids?: string[]) =>
+    req<AskReply>("/ask", { method: "POST", body: JSON.stringify({ question, paper_id, paper_ids }) }),
+  compare: (topic: string, paper_ids: string[]) =>
+    req<ComparisonReply>("/compare", { method: "POST", body: JSON.stringify({ topic, paper_ids }) }),
   chat: (message: string, session_id?: string | null) =>
     req<ChatReply>("/chat", {
       method: "POST",
@@ -362,13 +377,15 @@ export const api = {
   run: (query: string) =>
     req<Job>("/jobs/run", { method: "POST", body: JSON.stringify({ query }) }),
   job: (id: string) => req<Job>(`/jobs/${id}`),
-  agentSubmit: (task: string, maxSteps?: number, anchorSourceId?: string) =>
+  jobs: () => req<{ jobs: Job[] }>("/jobs"),
+  agentSubmit: (task: string, maxSteps?: number, anchorSourceId?: string, allowedPaperIds?: string[]) =>
     req<AgentTaskState>("/agent/tasks", {
       method: "POST",
       body: JSON.stringify({
         task,
         max_steps: maxSteps ?? undefined,
         anchor_source_id: anchorSourceId?.trim() || undefined,
+        allowed_paper_ids: allowedPaperIds,
       }),
     }),
   agentTask: (id: string) => req<AgentTaskState>(`/agent/tasks/${encodeURIComponent(id)}`),

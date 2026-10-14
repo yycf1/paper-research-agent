@@ -39,9 +39,10 @@ export default function PaperDetail({
   const [asking, setAsking] = useState(false);
   const [askOut, setAskOut] = useState<AskReply | null>(null);
   const [repro, setRepro] = useState<ReproView | null>(null);
+  const [revision, setRevision] = useState(0);
 
   const load = () =>
-    api.paper(id).then(setPaper).catch((e) => setErr(String(e)));
+    api.paper(id).then(value => { setPaper(value); setRevision(n => n + 1); }).catch((e) => setErr(String(e)));
 
   useEffect(() => {
     load();
@@ -115,7 +116,7 @@ export default function PaperDetail({
     }
   };
 
-  if (err) return <div className="detail-pane"><div className="err">⚠ {err}</div></div>;
+  if (err && !paper) return <div className="detail-pane"><button onClick={onClose}>← 返回文献库</button><div className="local-error" role="alert">{err}</div><button onClick={() => { setErr(""); void load(); }}>重新加载</button></div>;
   if (!paper) return <div className="detail-pane"><div className="loading"><span className="spin" />加载中…</div></div>;
 
   const exp = paper.experiment;
@@ -137,7 +138,7 @@ export default function PaperDetail({
   const finalStatus = typeof job?.result?.final_status === "string" ? String(job.result.final_status) : null;
   const totalMs = stageRecs.reduce((acc, s) => acc + (s.duration_ms || 0), 0);
   // 针对本文提问的前提：全文已入知识库（处理链完成或至少已分析）
-  const canAsk = !!paper.full_text || paper.status === "indexed" || paper.status === "analyzed";
+  const canAsk = paper.index_state?.can_ask === true;
 
   const doDelete = async () => {
     const shown = paper.title.length > 40 ? paper.title.slice(0, 40) + "…" : paper.title;
@@ -154,12 +155,13 @@ export default function PaperDetail({
 
   return (
     <div className="detail-pane">
+      <button className="reader-back" onClick={onClose}>← 返回文献库</button>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
         <h2>{paper.title}</h2>
         <div style={{ display: "flex", gap: 8, whiteSpace: "nowrap", height: 36 }}>
           <button className="danger" onClick={doDelete}>删除</button>
           <button
-            className="primary"
+            className="secondary"
             style={{ height: "100%" }}
             onClick={makePlan}
             disabled={planning || processing || !paper.experiment}
@@ -178,6 +180,8 @@ export default function PaperDetail({
           </button>
         </div>
       </div>
+      {err && <div className="local-error" role="alert">{err}</div>}
+      <div className="readiness-strip"><span className={`readiness-badge ${canAsk ? "ready" : "pending"}`}>{paper.index_state?.status === "ready" ? "索引就绪" : paper.index_state?.status === "legacy" ? "历史索引，建议更新" : paper.index_state?.status === "stale" ? "索引已过期" : "尚未建立可用索引"}</span><span>{paper.index_state?.chunk_count ?? "—"} 个知识块 · 问答范围：仅本文</span>{paper.knowledge_current === false && paper.experiment && <span>知识产物需要重新核对或处理</span>}</div>
       <div className="meta-row">
         <span className={`tag status-${paper.status}`}>{statusLabel(paper.status)}</span>
         <span>{paper.source}</span>
@@ -197,9 +201,6 @@ export default function PaperDetail({
         {paper.citations != null && <span>被引 {paper.citations}</span>}
         {paper.doi && <span>DOI: {paper.doi}</span>}
         {paper.authors.length > 0 && <span>{paper.authors.slice(0, 4).join(", ")}{paper.authors.length > 4 ? " 等" : ""}</span>}
-        <span style={{ cursor: "pointer", color: "var(--accent-2)" }} onClick={onClose}>
-          关闭 ✕
-        </span>
       </div>
 
       {job && (processing || (jobDone && stageRecs.length > 0)) && (
@@ -300,14 +301,15 @@ export default function PaperDetail({
             <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>
           )}
           {active === "experiment" && exp && <ExperimentView exp={exp} />}
-          {active === "facts" && <PaperFacts key={id} id={id} title={paper.title} />}
+          {active === "facts" && <PaperFacts key={`${id}-${revision}`} id={id} title={paper.title} />}
         </>
       )}
 
+      {!canAsk && <div className="surface-card"><h3>针对本文提问</h3><p className="hint">本文还没有当前可用的索引。点击上方处理按钮建立索引后即可提问；已有全文和报告仍可继续阅读。</p></div>}
       {canAsk && (
         <div className="section-block askbox">
           <h3>针对本文提问</h3>
-          <div className="hint">基于已索引的全文知识块检索作答（RAG，带出处页码/章节）——这是「一键处理」最直接的用途。</div>
+          <div className="hint">只在本文的已索引片段中查找答案，提供章节、页码和原文。</div>
           <div className="ask-row">
             <input
               type="text"

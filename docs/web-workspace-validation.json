@@ -1,0 +1,195 @@
+{
+  "date": "2026-10-14",
+  "scope": "desktop only",
+  "profiles": [
+    "1440x1000",
+    "1280x900"
+  ],
+  "fixture": "original synthetic offline UI responses",
+  "real_model_calls": 0,
+  "python": {
+    "passed": 364,
+    "seconds": 127.69,
+    "warnings": 1
+  },
+  "frontend": {
+    "build": "passed",
+    "lint_exit_code": 0,
+    "existing_effect_warnings": 3
+  },
+  "browser_errors": [],
+  "browser_checks": [
+    {
+      "profile": "desktop",
+      "view": "keyboard-groups",
+      "textEntryPreserved": true
+    },
+    {
+      "profile": "desktop",
+      "view": "library",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "comparison",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "copy-sources",
+      "citationsPreserved": true
+    },
+    {
+      "profile": "desktop",
+      "view": "tasks",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "reader",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "reader-error",
+      "contentPreserved": true
+    },
+    {
+      "profile": "desktop",
+      "view": "unindexed",
+      "askDisabled": true
+    },
+    {
+      "profile": "desktop",
+      "view": "discovery",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "ingest",
+      "libraryRefreshed": true
+    },
+    {
+      "profile": "desktop",
+      "view": "deep-link-back",
+      "restored": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "keyboard-groups",
+      "textEntryPreserved": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "library",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "comparison",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "copy-sources",
+      "citationsPreserved": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "tasks",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "reader",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "reader-error",
+      "contentPreserved": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "unindexed",
+      "askDisabled": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "discovery",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "ingest",
+      "libraryRefreshed": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "deep-link-back",
+      "restored": true
+    }
+  ],
+  "scope_requests": [
+    {
+      "profile": "desktop",
+      "path": "/compare",
+      "method": "POST",
+      "body": {
+        "topic": "比较数据划分和指标参数",
+        "paper_ids": [
+          "local:demo-1",
+          "local:demo-2"
+        ]
+      }
+    },
+    {
+      "profile": "desktop",
+      "path": "/ask",
+      "method": "POST",
+      "body": {
+        "question": "比较数据划分和指标参数",
+        "paper_ids": [
+          "local:demo-1",
+          "local:demo-2"
+        ]
+      }
+    },
+    {
+      "profile": "desktop-1280",
+      "path": "/compare",
+      "method": "POST",
+      "body": {
+        "topic": "比较数据划分和指标参数",
+        "paper_ids": [
+          "local:demo-1",
+          "local:demo-2"
+        ]
+      }
+    },
+    {
+      "profile": "desktop-1280",
+      "path": "/ask",
+      "method": "POST",
+      "body": {
+        "question": "比较数据划分和指标参数",
+        "paper_ids": [
+          "local:demo-1",
+          "local:demo-2"
+        ]
+      }
+    }
+  ],
+  "real_storage_api_checks": [
+    "packaged_frontend_assets",
+    "real_index_readiness",
+    "scoped_comparison_without_answer_model",
+    "real_retrieval_with_scripted_answer_and_citations",
+    "unknown_scope_rejected"
+  ],
+  "limits": [
+    "No real model semantic quality assessment",
+    "Ordinary process history remains in memory",
+    "No container sandbox or cross-process index transaction"
+  ]
+}

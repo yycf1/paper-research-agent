@@ -706,7 +706,7 @@ def api_get_settings() -> dict:
         "model": ep.model,
         "api_key_masked": _mask_key(ep.api_key),
         "has_key": bool(ep.api_key),
-        "theme": load_runtime_settings(cfg).get("theme", "dark"),
+        "theme": load_runtime_settings(cfg).get("theme", "light"),
     }
 
 

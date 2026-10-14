@@ -12,7 +12,7 @@ export function applyTheme(t: Theme): void {
 /** 首帧前调用：localStorage 优先，其次跟随 document 上已有的 data-theme（默认 dark）。 */
 export function initTheme(): void {
   const saved = localStorage.getItem(KEY);
-  document.documentElement.dataset.theme = saved === "light" ? "light" : saved === "dark" ? "dark" : document.documentElement.dataset.theme || "dark";
+  document.documentElement.dataset.theme = saved === "light" ? "light" : saved === "dark" ? "dark" : document.documentElement.dataset.theme || "light";
 }
 
 export function currentTheme(): Theme {

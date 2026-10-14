@@ -1,3 +1,4 @@
+import ResearchBoard from "../components/ResearchBoard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
@@ -59,6 +60,7 @@ export default function Assistant({
   onLibChanged,
   pendingTask,
   onConsumePendingTask,
+  researchScope,
 }: {
   /** 本页是否可见（App 双页常驻挂载，切走时仅隐藏） */
   active: boolean;
@@ -69,8 +71,9 @@ export default function Assistant({
   /** M26：详情页「交给 Agent 续做」跨页传入的锚定任务 */
   pendingTask: { task: string; anchor: string } | null;
   onConsumePendingTask: () => void;
+  researchScope?: { ids: string[]; compare: boolean; key: number } | null;
 }) {
-  const [mode, setMode] = useState<"chat" | "agent">("chat");
+  const [mode, setMode] = useState<"qa" | "chat" | "agent">("qa");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>(WELCOME);
@@ -85,6 +88,7 @@ export default function Assistant({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<AgentTaskBrief[]>([]);
   const [anchorId, setAnchorId] = useState("");  // M26：本任务锚定论文（提交时随任务下发）
+  const handledResearch = useRef<number | null>(null);
 
   const refreshSessions = useCallback(
     () => api.sessions().then((d) => setSessions(d.sessions)).catch(() => {}),
@@ -140,12 +144,16 @@ export default function Assistant({
 
   // M26：领取跨页传入的锚定任务——切 Agent 模式、预填不自动运行（用户确认后执行）
   useEffect(() => {
-    if (!pendingTask) return;
-    setMode("agent");
-    setInput(pendingTask.task);
-    setAnchorId(pendingTask.anchor);
-    onConsumePendingTask();
-  }, [pendingTask, onConsumePendingTask]);
+    if (pendingTask) {
+      setMode("agent");
+      setInput(pendingTask.task);
+      setAnchorId(pendingTask.anchor);
+      onConsumePendingTask();
+    } else if (researchScope && handledResearch.current !== researchScope.key) {
+      handledResearch.current = researchScope.key;
+      setMode("qa");
+    }
+  }, [pendingTask, onConsumePendingTask, researchScope]);
 
   const newChat = () => openSession(null);
 
@@ -195,7 +203,7 @@ export default function Assistant({
   // ---- Agent 模式：提交 + SSE 事件流（轮询兜底） + 确认门 ----
 
   const tick = useCallback(
-    async (id: string) => {
+    async function pollAgentTask(id: string) {
       try {
         const t = await api.agentTask(id);
         setAgentTask(t);
@@ -208,7 +216,7 @@ export default function Assistant({
         setAgentBusy(false);
         return;
       }
-      pollTimer.current = window.setTimeout(() => void tick(id), 1200);
+      pollTimer.current = window.setTimeout(() => void pollAgentTask(id), 1200);
     },
     [onLibChanged],
   );
@@ -354,6 +362,7 @@ export default function Assistant({
       )}
       <div className="chat">
         <div className="mode-switch">
+          <button className={mode === "qa" ? "on" : ""} onClick={() => setMode("qa")}>文献研究</button>
           <button className={mode === "chat" ? "on" : ""} onClick={() => { setMode("chat"); setAnchorId(""); }}>
             对话
           </button>
@@ -410,7 +419,8 @@ export default function Assistant({
           </div>
         )}
 
-        {mode === "chat" ? (
+        <div className={`research-container ${mode === "qa" ? "" : "off"}`}><ResearchBoard key={researchScope?.key ?? 0} scope={researchScope ?? null} onOpenDetail={onOpenDetail} /></div>
+        {mode === "qa" ? null : mode === "chat" ? (
           <>
             <div className="chat-log" ref={logRef}>
               {turns.map((t, i) => (
@@ -545,7 +555,7 @@ export default function Assistant({
           <div className="anchor-hint">⚓ 已锚定论文 {anchorId} —— 检索 / 入库 / 方向推荐类工具将被移除，防止任务漂移</div>
         )}
 
-        <div className="chat-input">
+        {mode !== "qa" && <div className="chat-input">
           <input
             ref={inputRef}
             type="text"
@@ -562,7 +572,7 @@ export default function Assistant({
           >
             {mode === "agent" ? "运行" : "发送"}
           </button>
-        </div>
+        </div>}
       </div>
     </div>
   );

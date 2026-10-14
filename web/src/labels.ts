@@ -6,7 +6,7 @@ const LABELS: Record<string, string> = {
   downloaded: "已下载",
   parsed: "已解析",
   analyzed: "已分析",
-  indexed: "已入库",
+  indexed: "已处理",
   download_failed: "失败",
 };
 

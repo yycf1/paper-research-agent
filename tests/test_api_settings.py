@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from fastapi.testclient import TestClient
 
 from paper_agent import config as cfg_mod
@@ -108,7 +107,7 @@ def test_settings_roundtrip_masked(monkeypatch, tmp_path):
     assert data["model"] == "web-model"
     assert data["api_key_masked"] == "web-****5432"
     assert data["has_key"] is True
-    assert data["theme"] == "dark"  # 缺省主题
+    assert data["theme"] == "light"  # 工作台缺省主题
     assert _WEB_KEY not in json.dumps(data)  # 明文永不回显
 
     # 落盘位置在 data_dir 下，且不含在 config.yaml 里
@@ -127,6 +126,8 @@ def test_settings_theme_roundtrip(monkeypatch, tmp_path):
     r = client.put("/api/settings", json={"base_url": "https://a/v1", "model": "m", "theme": "pink"})
     assert r.status_code == 422  # pydantic pattern 拦截
     assert client.get("/api/settings").json()["theme"] == "light"  # 原值不被破坏
+    assert client.put("/api/settings", json={"base_url": "https://a/v1", "model": "m", "theme": "dark"}).status_code == 200
+    assert client.get("/api/settings").json()["theme"] == "dark"
 
 
 def test_settings_save_keeps_key_when_blank(monkeypatch, tmp_path):
