@@ -676,6 +676,52 @@ table.papers .paper-title:hover {
   color: var(--muted);
   margin-top: 6px;
 }
+.download-progress {
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+}
+.download-progress ul {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  max-height: 310px;
+  overflow-y: auto;
+}
+.download-progress li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.download-progress li > div {
+  min-width: 0;
+  flex: 1;
+}
+.download-progress small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.download-state {
+  font-size: 11px;
+  flex-shrink: 0;
+  padding-top: 5px;
+}
+.download-state.saved,
+.download-state.already_saved {
+  color: var(--green);
+}
+.download-state.failed,
+.download-state.missing {
+  color: var(--red);
+}
 .delete-confirm {
   max-width: 620px;
 }

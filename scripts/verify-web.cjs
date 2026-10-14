@@ -7,7 +7,7 @@ const output = path.resolve(process.env.WEB_QA_OUTPUT || 'data/web-qa');
 fs.mkdirSync(output, { recursive: true });
 const base = process.env.WEB_QA_URL || 'http://127.0.0.1:18809';
 const titles = ['Evidence-aware Research Question Answering', 'Graph Learning with Explicit Evaluation Protocols', 'Vision Models: A Local Reading Example'];
-function paper(n) { return { source_id: `local:demo-${n}`, source: 'local', title: titles[n - 1] || 'Newly Discovered Research Example', authors: ['原创界面示例'], year: 2024 + n % 2, doi: null, citations: null, has_pdf: true, has_local_file: n === 1 || n === 3, landing_page: null, status: n === 4 ? 'discovered' : n === 3 ? 'parsed' : 'indexed', error: null, added_at: '2026-10-14T10:00:00', tag: n === 3 ? '视觉研究' : '检索与智能体', abstract: '原创离线界面示例，仅用于验证交互。' }; }
+function paper(n) { return { source_id: `local:demo-${n}`, source: 'local', title: titles[n - 1] || ({ 4: 'Newly Discovered Research Example', 5: 'Restricted Download Example', 6: 'No Fulltext Candidate Example', 7: 'Metadata Bookmark Example', 8: 'Legacy Server Response Example' })[n], authors: ['原创界面示例'], year: 2024 + n % 2, doi: null, citations: null, has_pdf: n !== 6, has_local_file: n === 1 || n === 3, landing_page: null, status: n >= 4 ? 'discovered' : n === 3 ? 'parsed' : 'indexed', error: null, added_at: '2026-10-14T10:00:00', tag: n === 3 ? '视觉研究' : '检索与智能体', abstract: '原创离线界面示例，仅用于验证交互。' }; }
 function fields(p) {
   const fact = (field, value) => ({ field, raw_value: value, normalized_value: value, citation_status: 'valid', support_status: 'unverified', claim_sha256: `fixture-${p.source_id}-${field}`, issues: [], review: null, evidence: [{ paper_id: p.source_id, chunk_id: `${p.source_id}::0`, section: '4 Experiments', page: 3, quote: 'Synthetic-A uses a fixed test split; Recall@10 is reported as a ratio.' }] });
   return { schema_version: 1, paper_id: p.source_id, source_version: 'original-offline-fixture', fields: { research_goal: [fact('research_goal', '研究带证据的文献问答')], datasets: [fact('datasets', { name: 'Synthetic-A', split: 'fixed test split' })], metrics: [fact('metrics', { name: 'Recall@10', value: '0.5', task: 'retrieval', dataset: 'Synthetic-A', split: 'fixed test split', definition: 'recall at 10', unit: 'ratio', evaluation_protocol: 'full candidate set', model: 'Demo' })] }, omitted: {}, unmatched_reviews: 0, load_issues: [], numeric_comparison: { ranking_allowed: false, reason: '条件仍需核对' } };
@@ -24,6 +24,7 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       let papers = [paper(1), paper(2), paper(3)];
       let pending = true;
       let submitted = null, submittedPending = true, failDeleteOnce = true;
+      let downloadJob = null;
       page.on('pageerror', error => errors.push({ profile, error: String(error) }));
       await page.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
@@ -52,9 +53,20 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
         if (name === '/agent/tasks/submitted-demo') return respond(submittedTask);
         if (name === '/agent/tasks/waiting-demo/confirm') { assert.equal(body.approve, false); pending = false; return respond({ ok: true }); }
         if (name === '/agent/tasks/waiting-demo') return respond(task);
-        if (name === '/jobs') return respond({ jobs: [{ id: 'process-demo', kind: 'process_paper', status: 'done', result: { source_id: 'local:demo-3', final_status: 'parsed', stages: [{ stage: 'report', label: '生成精读报告', status: 'failed', detail: '离线失败场景示例' }] }, error: '' }] });
-        if (name === '/search') return respond({ candidates: [{ ...paper(4), duplicate_of: null }], total_hits: 1, notes: [], source_hits: { openalex: 1 }, topics: [body.query], optimized: false });
-        if (name === '/papers/ingest') { papers.push({ ...paper(4), tag: body.tag }); return respond({ ingested: 1, duplicates: 0, papers: [paper(4)] }); }
+        if (name === '/jobs') return respond({ jobs: [{ id: 'process-demo', kind: 'process_paper', status: 'done', result: { source_id: 'local:demo-3', final_status: 'parsed', stages: [{ stage: 'report', label: '生成精读报告', status: 'failed', detail: '离线失败场景示例' }] }, error: '' }, ...(downloadJob ? [downloadJob] : [])] });
+        if (name === '/search') { const candidates = (body.query.includes('legacy') ? [8] : body.query.includes('bookmark') ? [7] : [4, 5, 6]).map(n => ({ ...paper(n), duplicate_of: null })); return respond({ candidates, total_hits: candidates.length, notes: [], source_hits: { openalex: candidates.length }, topics: [body.query], optimized: false }); }
+        if (name === '/papers/ingest') {
+          papers.push(...body.papers.map(p => ({ ...p, tag: body.tag })));
+          if (body.papers.some(p => p.source_id === 'local:demo-8')) return respond({ ingested: 1, duplicates: 0, papers: body.papers });
+          if (body.download_fulltext) downloadJob = { id: 'download-demo', kind: 'download_papers', status: 'running', error: '', result: { total: body.papers.length, completed: 0, items: body.papers.map(p => ({ source_id: p.source_id, title: p.title, status: 'pending', detail: '等待下载' })) } };
+          return respond({ ingested: body.papers.length, duplicates: 0, papers: body.papers, download_job: body.download_fulltext ? downloadJob : null });
+        }
+        if (name === '/jobs/download-demo') {
+          downloadJob.status = 'done'; downloadJob.result.completed = downloadJob.result.total;
+          downloadJob.result.items = downloadJob.result.items.map(item => ({ ...item, status: item.source_id.endsWith('4') ? 'saved' : item.source_id.endsWith('5') ? 'failed' : 'no_link', detail: item.source_id.endsWith('4') ? '全文已保存；尚未分析' : item.source_id.endsWith('5') ? 'HTTP 403 source refused' : '来源没有提供全文候选链接' }));
+          papers = papers.map(p => p.source_id === 'local:demo-4' ? { ...p, has_local_file: true, status: 'downloaded' } : p.source_id === 'local:demo-5' ? { ...p, status: 'download_failed' } : p);
+          return respond(downloadJob);
+        }
         if (name === '/ask') {
           assert.deepEqual(body.paper_ids, ['local:demo-1', 'local:demo-2']);
           return respond({ answer: '使用 Synthetic-A 的固定测试划分 [1]。', answer_status: 'generated', citation_check: { status: 'passed', semantic_support: 'not_automatically_judged' }, retrieval_notes: [], sources: [{ n: [1], paper_id: 'local:demo-1', title: titles[0], section: '4 Experiments', page: 3, chunks: [{ n: 1, chunk_id: 'local:demo-1::0', page: 3, text: 'Synthetic-A uses a fixed test split.' }] }] });
@@ -147,9 +159,35 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       await page.screenshot({ path: path.join(output, `discovery-${profile}.png`), fullPage: true });
       await noOverflow('discovery');
       await page.locator('.discovery-result-card .modal-foot button.primary').click();
+      const downloadProgress = page.getByRole('region', { name: '所选论文下载进度' });
+      await downloadProgress.getByText('所选论文下载结果', { exact: true }).waitFor();
+      await downloadProgress.getByText('全文已保存', { exact: true }).waitFor();
+      await downloadProgress.getByText('下载失败', { exact: true }).waitFor();
+      await downloadProgress.getByText('没有全文链接', { exact: true }).waitFor();
+      assert.equal(requests.filter(r => r.path === '/papers/ingest').at(-1).body.download_fulltext, true);
+      await page.screenshot({ path: path.join(output, `download-results-${profile}.png`), fullPage: true });
+      await noOverflow('save-and-download');
+      await page.getByPlaceholder('输入主题检索论文，如「图神经网络 推荐系统」…').fill('bookmark only');
+      await page.locator('.discovery-view .lib-head button.primary').click();
+      await page.getByRole('button', { name: '仅保存信息', exact: true }).click();
+      await page.locator('.discovery-result-card').waitFor({ state: 'hidden' });
+      assert.equal(requests.filter(r => r.path === '/papers/ingest').at(-1).body.download_fulltext, false);
+      assert.equal(papers.find(p => p.source_id === 'local:demo-7').has_local_file, false);
+      assert.equal(await downloadProgress.count(), 0);
+      checks.push({ profile, view: 'save-information-only', noDownloadSubmitted: true });
+      await page.getByPlaceholder('输入主题检索论文，如「图神经网络 推荐系统」…').fill('legacy server');
+      await page.locator('.discovery-view .lib-head button.primary').click();
+      await page.locator('.discovery-result-card .modal-foot button.primary').click();
+      await page.getByText(/当前服务仅保存了信息，未提交下载任务/).waitFor();
+      checks.push({ profile, view: 'legacy-ingest-response', noFalseDownloadClaim: true });
       await nav('文献库').click();
       await page.getByRole('button', { name: 'Newly Discovered Research Example', exact: true }).waitFor();
       checks.push({ profile, view: 'ingest', libraryRefreshed: true });
+      await nav('任务记录').click();
+      await page.getByText('部分未取得全文', { exact: true }).waitFor();
+      await page.locator('details.processing-record').filter({ hasText: '获取所选全文' }).locator('summary').click();
+      await page.getByRole('region', { name: '所选论文下载进度' }).getByText('没有全文链接', { exact: true }).waitFor();
+      await noOverflow('download-task-record');
       await page.goto(base + '/?paper=local%3Ademo-1');
       await page.getByRole('heading', { name: titles[0], exact: true }).waitFor();
       await nav('发现论文').click(); await page.goBack();
@@ -215,7 +253,7 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       await page.getByRole('button', { name: '确认删除', exact: true }).click();
       await page.getByRole('button', { name: titles[1], exact: true }).waitFor({ state: 'hidden' });
       await page.getByRole('button', { name: titles[2], exact: true }).waitFor();
-      assert.equal(papers.length, 2);
+      assert.equal(papers.length, 6);
       checks.push({ profile, view: 'bulk-delete-retry', unselectedRetained: true });
       await context.close();
     }

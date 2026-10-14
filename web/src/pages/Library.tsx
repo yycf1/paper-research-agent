@@ -6,8 +6,10 @@ import {
   type SearchReply,
   type StatusSummary,
   type TagsReply,
+  type Job,
 } from "../api";
 import PaperDetail from "../components/PaperDetail";
+import DownloadProgress from "../components/DownloadProgress";
 import { STATUS_ORDER, STATUS_HELP, statusLabel } from "../labels";
 
 const PAGE_SIZE = 200; // 后端单页上限；超出部分用「加载更多」追加
@@ -89,6 +91,8 @@ export default function Library({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ingestTag, setIngestTag] = useState("");
   const [ingesting, setIngesting] = useState(false);
+  const [downloadJob, setDownloadJob] = useState<Job | null>(null);
+  const [downloadPollError, setDownloadPollError] = useState("");
   const [notes, setNotes] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [err, setErr] = useState("");
@@ -124,6 +128,24 @@ export default function Library({
         .catch(() => {}),
     [],
   );
+  useEffect(() => {
+    if (!downloadJob || downloadJob.status !== "running") return;
+    const timer = window.setInterval(() => {
+      api
+        .job(downloadJob.id)
+        .then((job) => {
+          setDownloadJob(job);
+          if (job.status !== "running") onChanged();
+        })
+        .catch((e) => {
+          setDownloadPollError(
+            `暂时无法读取下载进度：${e}。已保存的信息仍在文献库，可到任务记录查看。`,
+          );
+          window.clearInterval(timer);
+        });
+    }, 1200);
+    return () => window.clearInterval(timer);
+  }, [downloadJob, onChanged]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -223,7 +245,7 @@ export default function Library({
       return next;
     });
 
-  const doIngest = async () => {
+  const doIngest = async (download = false) => {
     if (!preview) return;
     setIngesting(true);
     setErr("");
@@ -231,10 +253,17 @@ export default function Library({
       const chosen = preview.candidates.filter((c) =>
         selected.has(c.source_id),
       );
-      const out = await api.ingest(chosen, ingestTag.trim());
+      const out = await api.ingest(chosen, ingestTag.trim(), download);
+      if (out.download_job) {
+        setDownloadJob(out.download_job);
+        setDownloadPollError("");
+      } else if (downloadJob?.status !== "running") {
+        setDownloadJob(null);
+        setDownloadPollError("");
+      }
       setPreview(null);
       setNotes([
-        `已新增 ${out.ingested} 条文献信息，尚未下载全文；${out.duplicates} 条与库内记录重复，仅合并信息。`,
+        `已新增 ${out.ingested} 条文献信息；${out.duplicates} 条与库内记录重复。${download ? out.download_job ? "已提交所选论文的全文下载任务，结果见下方。" : "当前服务仅保存了信息，未提交下载任务；请使用新版服务地址。" : "仅保存信息，尚未下载全文。"}`,
       ]);
       // 总是刷新列表：目标分组与当前过滤相同时 setTag 不触发重渲染
       if (ingestTag.trim() && tag !== ingestTag.trim()) {
@@ -563,7 +592,7 @@ export default function Library({
             <p>
               {view === "library"
                 ? "把论文整理成可以持续追问的研究资料。"
-                : "检索公开学术来源，预览后保存文献信息，全文需另行获取。"}
+                : "检索公开学术来源，选择论文后可同时保存信息并下载全文。"}
             </p>
           </div>
           <div className="heading-actions">
@@ -593,7 +622,7 @@ export default function Library({
           <div className="discovery-guide">
             <span>01 搜索主题</span>
             <span>02 预览候选</span>
-            <span>03 保存文献信息</span>
+            <span>03 保存并下载全文</span>
           </div>
         )}
         {view === "discover" && (
@@ -850,6 +879,32 @@ export default function Library({
                 · {n}
               </div>
             ))}
+          </div>
+        )}
+        {view === "discover" && downloadJob && (
+          <DownloadProgress
+            job={downloadJob}
+            onOpenDetail={(id) => onOpenDetail(id)}
+          />
+        )}
+        {view === "discover" && downloadPollError && (
+          <div className="local-error" role="alert">
+            {downloadPollError}
+            <button
+              onClick={() => {
+                if (downloadJob)
+                  api
+                    .job(downloadJob.id)
+                    .then((job) => {
+                      setDownloadJob(job);
+                      setDownloadPollError("");
+                      onChanged();
+                    })
+                    .catch((e) => setDownloadPollError(String(e)));
+              }}
+            >
+              刷新下载进度
+            </button>
           </div>
         )}
         <div className="table-wrap">
@@ -1132,11 +1187,17 @@ export default function Library({
                 style={{ flex: 1 }}
               />
               <button
+                disabled={ingesting || selected.size === 0}
+                onClick={() => void doIngest(false)}
+              >
+                仅保存信息
+              </button>
+              <button
                 className="primary"
                 disabled={ingesting || selected.size === 0}
-                onClick={doIngest}
+                onClick={() => void doIngest(true)}
               >
-                {ingesting ? "入库中…" : `保存所选信息（${selected.size}）`}
+                {ingesting ? "保存中…" : `保存并下载全文（${selected.size}）`}
               </button>
             </div>
           </div>

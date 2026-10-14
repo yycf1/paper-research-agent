@@ -7,6 +7,7 @@ import {
 } from "../api";
 import Markdown from "../md";
 import FieldEvidence from "../components/FieldEvidence";
+import DownloadProgress from "../components/DownloadProgress";
 
 const STATUS: Record<string, string> = {
   running: "进行中",
@@ -133,21 +134,40 @@ export default function Tasks({
               status: string;
               detail: string;
             }[];
-            const failed = stages.some((s) => s.status === "failed");
+            const failed =
+              stages.some((s) => s.status === "failed") ||
+              (job.kind === "download_papers" &&
+                Array.isArray(job.result.items) &&
+                job.result.items.some((item) =>
+                  ["failed", "missing", "no_link"].includes(item.status),
+                ));
             return (
               <details className="processing-record" key={job.id}>
                 <summary>
                   <span>
-                    {job.kind === "process_paper" ? "处理文献" : "检索与处理"}{" "}
+                    {job.kind === "download_papers"
+                      ? "获取所选全文"
+                      : job.kind === "process_paper"
+                        ? "处理文献"
+                        : "检索与处理"}{" "}
                     <small>{String(job.result.source_id ?? job.id)}</small>
                   </span>
                   <span
                     className={`task-state ${failed ? "error" : job.status}`}
                   >
-                    {failed ? "处理未完成" : STATUS[job.status]}
+                    {job.status === "running"
+                      ? "进行中"
+                      : failed
+                        ? job.kind === "download_papers"
+                          ? "部分未取得全文"
+                          : "处理未完成"
+                        : STATUS[job.status]}
                   </span>
                 </summary>
                 <div className="task-body">
+                  {job.kind === "download_papers" && (
+                    <DownloadProgress job={job} onOpenDetail={onOpenDetail} />
+                  )}
                   {stages.map((s) => (
                     <p key={s.stage}>
                       {s.label} ·{" "}

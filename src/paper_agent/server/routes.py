@@ -26,6 +26,7 @@ from paper_agent.models import Paper
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.rag.vectorstore import VectorStore
 from paper_agent.server import agent_jobs, jobs
+from paper_agent.services.acquisition import download_selected_papers
 from paper_agent.services.assistant import handle_message, suggest_directions
 from paper_agent.services.facts import load_bound_fields
 from paper_agent.services.library_ops import (
@@ -332,6 +333,7 @@ class PaperIn(BaseModel):
 class IngestRequest(BaseModel):
     papers: list[PaperIn] = Field(min_length=1, max_length=200)
     tag: str = Field("", max_length=60)
+    download_fulltext: bool = False
 
 
 @router.post("/papers/ingest")
@@ -346,10 +348,24 @@ def api_ingest(req: IngestRequest, lib: Library = Depends(open_lib)) -> dict:
         for p in req.papers
     ]
     result = ingest_papers(papers, lib=lib, tag=req.tag or None)
+    download_job = None
+    if req.download_fulltext:
+        ids = list(dict.fromkeys(p.source_id for p in req.papers))
+        cfg = load_config()
+
+        def _download(progress: dict) -> dict:
+            worker_lib = paths.library(cfg)
+            try:
+                return download_selected_papers(ids, cfg, worker_lib, progress)
+            finally:
+                worker_lib.close()
+
+        download_job = jobs.submit("download_papers", _download, result={"total": len(ids), "completed": 0, "items": []}).to_dict()
     return {
         "ingested": len(result.new_papers),
         "duplicates": result.duplicates,
         "papers": [record_to_dict(r) for r in result.new_papers],
+        "download_job": download_job,
     }
 
 

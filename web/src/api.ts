@@ -66,6 +66,14 @@ export interface IngestReply {
   ingested: number;
   duplicates: number;
   papers: Paper[];
+  download_job?: Job | null;
+}
+
+export interface DownloadItem {
+  source_id: string;
+  title: string;
+  status: "pending" | "running" | "saved" | "already_saved" | "no_link" | "failed" | "missing";
+  detail: string;
 }
 
 export interface TagWithCount {
@@ -336,10 +344,11 @@ export const api = {
   ingest: (
     papers: { source: string; source_id: string; title: string; abstract?: string }[],
     tag: string,
+    download_fulltext = false,
   ) =>
     req<IngestReply>("/papers/ingest", {
       method: "POST",
-      body: JSON.stringify({ papers, tag }),
+      body: JSON.stringify({ papers, tag, download_fulltext }),
     }),
   upload: (file: File) => {
     const fd = new FormData();

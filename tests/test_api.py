@@ -146,6 +146,97 @@ def test_search_preview_and_ingest(monkeypatch, tmp_path):
     lib.close()
 
 
+def test_ingest_download_is_explicit_and_runs_without_analysis(monkeypatch, tmp_path):
+    from paper_agent.services import acquisition as acq
+
+    lib = _seed(tmp_path)
+    lib.close()
+    client = _client(monkeypatch, tmp_path)
+    calls = []
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("保存并下载不得进入模型分析流水线")
+
+    def download(paper, directory, **kwargs):
+        calls.append(paper.source_id)
+        target = directory / "test-download.pdf"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"download boundary fixture")
+        return target
+
+    monkeypatch.setattr(rt, "process_paper", forbidden)
+    monkeypatch.setattr(rt, "run_pipeline", forbidden)
+    monkeypatch.setattr(acq, "download_pdf", download)
+    payload = {"papers": [{"source": "local", "source_id": "local:new", "title": "New download",
+                           "pdf_urls": ["https://example.org/paper.pdf"]}]}
+    saved = client.post("/api/papers/ingest", json=payload).json()
+    assert saved["download_job"] is None and calls == []
+    assert client.get("/api/papers/local:new").json()["status"] == "discovered"
+    started = client.post("/api/papers/ingest", json={**payload, "download_fulltext": True}).json()
+    assert started["duplicates"] == 1
+    job = started["download_job"]
+    for _ in range(80):
+        job = client.get("/api/jobs/" + job["id"]).json()
+        if job["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert job["status"] == "done" and job["result"]["items"][0]["status"] == "saved"
+    assert calls == ["local:new"]
+    detail = client.get("/api/papers/local:new").json()
+    assert detail["has_local_file"] is True and detail["status"] == "downloaded"
+    assert detail["experiment"] is None and detail["report"] is None
+
+
+def test_ingest_download_with_real_local_http_pdf(monkeypatch, tmp_path):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import pymupdf
+
+    with pymupdf.open() as doc:
+        doc.new_page().insert_text((72, 72), "Original save-and-download fixture")
+        payload = doc.tobytes()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        lib = _seed(tmp_path)
+        lib.close()
+        client = _client(monkeypatch, tmp_path)
+        reply = client.post("/api/papers/ingest", json={"download_fulltext": True, "papers": [{
+            "source": "local", "source_id": "local:http-pdf", "title": "Original HTTP fixture",
+            "pdf_urls": [f"http://127.0.0.1:{server.server_port}/paper.pdf"],
+        }]}).json()
+        job = reply["download_job"]
+        for _ in range(100):
+            job = client.get("/api/jobs/" + job["id"]).json()
+            if job["status"] != "running":
+                break
+            time.sleep(0.02)
+        assert job["status"] == "done" and job["result"]["items"][0]["status"] == "saved"
+        detail = client.get("/api/papers/local:http-pdf").json()
+        assert detail["has_local_file"] is True and detail["status"] == "downloaded"
+        with pymupdf.open(tmp_path / "data/papers/local_http-pdf/paper.pdf") as saved:
+            assert "Original save-and-download fixture" in saved[0].get_text()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_tags_facet(monkeypatch, tmp_path):
     lib = _seed(tmp_path)
     lib.upsert_paper(_paper("local:U1", "Uploaded Doc"), tag="本地上传")

@@ -8,8 +8,8 @@
   "fixture": "original synthetic offline UI responses",
   "real_model_calls": 0,
   "python": {
-    "passed": 366,
-    "seconds": 132.58,
+    "passed": 382,
+    "seconds": 126.66,
     "warnings": 1
   },
   "frontend": {
@@ -71,8 +71,28 @@
     },
     {
       "profile": "desktop",
+      "view": "save-and-download",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "save-information-only",
+      "noDownloadSubmitted": true
+    },
+    {
+      "profile": "desktop",
+      "view": "legacy-ingest-response",
+      "noFalseDownloadClaim": true
+    },
+    {
+      "profile": "desktop",
       "view": "ingest",
       "libraryRefreshed": true
+    },
+    {
+      "profile": "desktop",
+      "view": "download-task-record",
+      "overflow": false
     },
     {
       "profile": "desktop",
@@ -162,8 +182,28 @@
     },
     {
       "profile": "desktop-1280",
+      "view": "save-and-download",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "save-information-only",
+      "noDownloadSubmitted": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "legacy-ingest-response",
+      "noFalseDownloadClaim": true
+    },
+    {
+      "profile": "desktop-1280",
       "view": "ingest",
       "libraryRefreshed": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "download-task-record",
+      "overflow": false
     },
     {
       "profile": "desktop-1280",
@@ -264,5 +304,275 @@
     "Ordinary process history remains in memory",
     "No container sandbox or cross-process index transaction"
   ],
-  "personal_papers_deleted": 0
+  "personal_papers_deleted": 0,
+  "ingest_requests": [
+    {
+      "profile": "desktop",
+      "path": "/papers/ingest",
+      "method": "POST",
+      "body": {
+        "papers": [
+          {
+            "source_id": "local:demo-4",
+            "source": "local",
+            "title": "Newly Discovered Research Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2024,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          },
+          {
+            "source_id": "local:demo-5",
+            "source": "local",
+            "title": "Restricted Download Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2025,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          },
+          {
+            "source_id": "local:demo-6",
+            "source": "local",
+            "title": "No Fulltext Candidate Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2024,
+            "doi": null,
+            "citations": null,
+            "has_pdf": false,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          }
+        ],
+        "tag": "graph research",
+        "download_fulltext": true
+      }
+    },
+    {
+      "profile": "desktop",
+      "path": "/papers/ingest",
+      "method": "POST",
+      "body": {
+        "papers": [
+          {
+            "source_id": "local:demo-7",
+            "source": "local",
+            "title": "Metadata Bookmark Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2025,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          }
+        ],
+        "tag": "bookmark only",
+        "download_fulltext": false
+      }
+    },
+    {
+      "profile": "desktop",
+      "path": "/papers/ingest",
+      "method": "POST",
+      "body": {
+        "papers": [
+          {
+            "source_id": "local:demo-8",
+            "source": "local",
+            "title": "Legacy Server Response Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2024,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          }
+        ],
+        "tag": "legacy server",
+        "download_fulltext": true
+      }
+    },
+    {
+      "profile": "desktop-1280",
+      "path": "/papers/ingest",
+      "method": "POST",
+      "body": {
+        "papers": [
+          {
+            "source_id": "local:demo-4",
+            "source": "local",
+            "title": "Newly Discovered Research Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2024,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          },
+          {
+            "source_id": "local:demo-5",
+            "source": "local",
+            "title": "Restricted Download Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2025,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          },
+          {
+            "source_id": "local:demo-6",
+            "source": "local",
+            "title": "No Fulltext Candidate Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2024,
+            "doi": null,
+            "citations": null,
+            "has_pdf": false,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          }
+        ],
+        "tag": "graph research",
+        "download_fulltext": true
+      }
+    },
+    {
+      "profile": "desktop-1280",
+      "path": "/papers/ingest",
+      "method": "POST",
+      "body": {
+        "papers": [
+          {
+            "source_id": "local:demo-7",
+            "source": "local",
+            "title": "Metadata Bookmark Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2025,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          }
+        ],
+        "tag": "bookmark only",
+        "download_fulltext": false
+      }
+    },
+    {
+      "profile": "desktop-1280",
+      "path": "/papers/ingest",
+      "method": "POST",
+      "body": {
+        "papers": [
+          {
+            "source_id": "local:demo-8",
+            "source": "local",
+            "title": "Legacy Server Response Example",
+            "authors": [
+              "原创界面示例"
+            ],
+            "year": 2024,
+            "doi": null,
+            "citations": null,
+            "has_pdf": true,
+            "has_local_file": false,
+            "landing_page": null,
+            "status": "discovered",
+            "error": null,
+            "added_at": "2026-10-14T10:00:00",
+            "tag": "检索与智能体",
+            "abstract": "原创离线界面示例，仅用于验证交互。",
+            "duplicate_of": null
+          }
+        ],
+        "tag": "legacy server",
+        "download_fulltext": true
+      }
+    }
+  ],
+  "real_local_http_pdf_check": "Original PDF through ingest, background job, real HTTP download, SQLite state and PDF text",
+  "personal_downloads_started": 0
 }
