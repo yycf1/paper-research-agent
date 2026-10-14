@@ -43,6 +43,7 @@ class AgentTaskState:
     started_at: float = 0.0
     finished_at: float = 0.0
     anchor: str = ""  # M26：锚定论文 id（空 = 未锚定）
+    allowed_paper_ids: list[str] | None = None
 
     def to_dict(self, *, with_steps: bool = True) -> dict:
         out = {
@@ -56,6 +57,7 @@ class AgentTaskState:
             "error": self.error,
             "step_count": len(self.steps),
             "anchor": self.anchor,
+            "allowed_paper_ids": self.allowed_paper_ids,
         }
         if with_steps:
             out["steps"] = self.steps
@@ -89,6 +91,7 @@ class _Registry:
         trace_path: Path | None = None,
         task_id: str | None = None,
         anchor: str | None = None,
+        allowed_paper_ids: list[str] | None = None,
     ) -> AgentTaskState:
         """提交任务并在守护线程执行。chat_fn 可注入（测试用假模型）。
 
@@ -100,6 +103,7 @@ class _Registry:
         state = AgentTaskState(
             id=task_id or uuid.uuid4().hex[:12], task=task,
             started_at=time.time(), anchor=(anchor or "").strip(),
+            allowed_paper_ids=list(allowed_paper_ids) if allowed_paper_ids is not None else ([anchor] if anchor else None),
         )
         handle = _Handle(state=state)
         with self._lock:
@@ -168,6 +172,7 @@ class _Registry:
                 executor = ToolExecutor(
                     lib=job_lib, retriever=retriever, cfg=cfg, confirm=_confirm,
                     anchor=anchor or None,
+                    allowed_paper_ids=state.allowed_paper_ids,
                 )
                 result = run_agent_task(
                     state.task,

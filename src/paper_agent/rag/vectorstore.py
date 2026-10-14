@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
+from paper_agent.rag.scope import where_scope
+
 # Chroma publishes a process-wide system before its native bindings finish starting.
 # Concurrent first requests must not obtain that partially initialized system.
 _CLIENT_INIT_LOCK = Lock()
@@ -96,10 +98,10 @@ class VectorStore:
 
     # ---- 查询 ----
 
-    def all_hits(self, *, paper_id: str | None = None) -> list[Hit]:
+    def all_hits(self, *, paper_id: str | None = None, paper_ids: list[str] | None = None) -> list[Hit]:
         """BM25 与向量索引共享同一份块，删除/重建无需同步第二份索引。"""
         rows = self.collection.get(
-            where={"paper_id": {"$eq": paper_id}} if paper_id else None,
+            where=where_scope(paper_id, paper_ids),
             include=["documents", "metadatas"],
         )
         return [Hit(
@@ -114,9 +116,10 @@ class VectorStore:
         *,
         k: int = 5,
         paper_id: str | None = None,
+        paper_ids: list[str] | None = None,
     ) -> list[Hit]:
         """按向量取 top-k；paper_id 限定范围时在该论文内检索。"""
-        where = {"paper_id": {"$eq": paper_id}} if paper_id else None
+        where = where_scope(paper_id, paper_ids)
         res = self.collection.query(
             query_embeddings=[embedding],
             n_results=k,

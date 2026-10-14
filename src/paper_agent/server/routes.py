@@ -765,6 +765,7 @@ class AgentTaskRequest(BaseModel):
     max_steps: int | None = Field(None, ge=1, le=50)
     token_budget: int | None = Field(None, ge=1000)
     anchor_source_id: str | None = Field(None, max_length=100)  # M26：锚定论文（防续任务漂移）
+    allowed_paper_ids: list[str] | None = Field(None, min_length=1, max_length=6)
 
 
 @router.post("/agent/tasks", status_code=202)
@@ -781,6 +782,12 @@ def api_agent_submit(req: AgentTaskRequest, lib: Library = Depends(open_lib)) ->
     anchor = None
     if (req.anchor_source_id or "").strip():
         anchor = _resolve_sid(req.anchor_source_id.strip(), lib)
+    from paper_agent.agent.scope import PaperScope
+
+    try:
+        scope = PaperScope(lib, anchor=anchor, allowed_paper_ids=req.allowed_paper_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     cfg = load_config()
     trace_dir = paths.data_dir(cfg) / "traces" / "web"
     tid = uuid.uuid4().hex[:12]
@@ -793,6 +800,7 @@ def api_agent_submit(req: AgentTaskRequest, lib: Library = Depends(open_lib)) ->
         trace_path=trace_path,
         task_id=tid,
         anchor=anchor,
+        allowed_paper_ids=list(scope.allowed) if scope.allowed is not None else None,
     )
     return state.to_dict(with_steps=False)
 
@@ -806,6 +814,8 @@ def _trace_task_id(stem: str) -> str:
 def _history_task(path: Path, *, with_steps: bool) -> dict | None:
     """解析一条 web 轨迹为任务视图；无有效记录的空文件返回 None。"""
     task_text = ""
+    anchor = ""
+    allowed_paper_ids = None
     steps: list[dict] = []
     final_rec: dict | None = None
     try:
@@ -821,9 +831,11 @@ def _history_task(path: Path, *, with_steps: bool) -> dict | None:
                 kind = rec.get("type")
                 if kind == "task":
                     task_text = rec.get("task", "")
+                    anchor = rec.get("anchor", "")
+                    allowed_paper_ids = rec.get("allowed_paper_ids")
                 elif kind == "step":
                     steps.append(
-                        {k: rec.get(k) for k in ("step", "tool", "arguments", "status", "detail", "duration_ms")}
+                        {k: rec.get(k) for k in ("step", "tool", "arguments", "status", "detail", "duration_ms", "comparison")}
                     )
                 elif kind == "final":
                     final_rec = rec
@@ -846,6 +858,8 @@ def _history_task(path: Path, *, with_steps: bool) -> dict | None:
     out = {
         "id": _trace_task_id(path.stem),
         "task": task_text,
+        "anchor": anchor,
+        "allowed_paper_ids": allowed_paper_ids,
         "status": status,
         "step_count": len(steps),
         "answer": answer,

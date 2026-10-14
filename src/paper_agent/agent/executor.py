@@ -26,10 +26,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from paper_agent import paths
+from paper_agent.agent.scope import PaperScope
 from paper_agent.config import load_config
 from paper_agent.download import safe_dirname
 from paper_agent.library import Library
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
+from paper_agent.rag.scope import check_hits
 from paper_agent.services.assistant import suggest_directions
 from paper_agent.services.facts import load_bound_fields
 from paper_agent.services.search import Candidate, ingest_papers, search_sources
@@ -104,6 +106,7 @@ class ToolExecutor:
         params: dict | None = None,
         confirm: Callable[[int, list[str]], bool] | None = None,
         anchor: str | None = None,
+        allowed_paper_ids: list[str] | None = None,
     ):
         self._lib = lib
         self._retriever = retriever
@@ -117,8 +120,17 @@ class ToolExecutor:
         # M26 任务锚定：锚定复现任务时移除易致漂移的工具（最小权限工具集）。
         # 漂移事故（M25）：续任务未锚定 source_id，模型自行检索、入库了另一篇
         # 论文并在其工作区写代码——prompt 约束只是建议，作用域在这里代码强制。
-        self._anchor = (anchor or "").strip() or None
-        self._denied = ANCHOR_DENIED_TOOLS if self._anchor else frozenset()
+        self._scope = PaperScope(lib, anchor=anchor, allowed_paper_ids=allowed_paper_ids)
+        self._anchor = self._scope.anchor
+        self._denied = ANCHOR_DENIED_TOOLS if self._scope.allowed else frozenset()
+
+    @property
+    def allowed_paper_ids(self) -> tuple[str, ...] | None:
+        return self._scope.allowed
+
+    @property
+    def anchor(self) -> str | None:
+        return self._anchor
 
     @staticmethod
     def specs() -> list[dict]:
@@ -160,7 +172,7 @@ class ToolExecutor:
             return ToolResult(
                 tool=name, status="fatal",
                 error=(
-                    f"本任务已锚定论文 {self._anchor}，{name} 超出任务作用域（防任务漂移）；"
+                    f"本任务已锚定论文范围 {self._scope.allowed}，{name} 超出任务作用域（防任务漂移）；"
                     "请专注完成锚定任务本身"
                 ),
             )
@@ -272,17 +284,26 @@ class ToolExecutor:
         question = str(args.get("question") or "").strip()
         if not question:
             raise ValueError("question 不能为空")
+        ids = self._scope.query_ids(args)
+        scope = {"paper_ids": list(ids)} if ids is not None else {}
         if self._retriever is None or self._retriever.store.count() == 0:
             return {"answer": "向量库为空，无法回答库内问题（可先 search_papers 检索相关论文）。",
                     "sources": [], "empty_index": True}
         try:
-            answer, hits = answer_question(question, retriever=self._retriever)
+            answer, hits = answer_question(question, retriever=self._retriever, **scope)
         except RuntimeError as exc:  # 缺 Key / 限流退避无效等配置或可用性问题
             return {"answer": f"问答链暂时不可用：{exc}", "sources": [], "error": True}
         return {"answer": answer, "sources": sources_from_hits(hits)}
 
     def _tool_status(self, _args: dict) -> dict:
-        counts = self._lib.counts()
+        if self._scope.allowed is None:
+            counts = self._lib.counts()
+        else:
+            counts = {}
+            for sid in self._scope.allowed:
+                rec = self._lib.get(sid)
+                if rec is not None:
+                    counts[rec.status] = counts.get(rec.status, 0) + 1
         return {"total": sum(counts.values()), "by_status": counts}
 
     def _tool_explore(self, _args: dict) -> dict:
@@ -296,10 +317,10 @@ class ToolExecutor:
         topic = str(args.get("topic") or "").strip()
         if not topic:
             raise ValueError("topic 不能为空")
+        ids = list(self._scope.many(args["paper_ids"], allow_missing=True)) if "paper_ids" in args else list(self._scope.allowed or ())
         if self._retriever is None or self._retriever.store.count() == 0:
             return {"topic": topic, "papers": [], "note": "向量库为空：先检索并处理论文建立索引"}
 
-        ids = [str(x).strip() for x in (args.get("paper_ids") or []) if str(x).strip()]
         if not ids:
             # 缺省取最近入库的已处理论文（analyzed/indexed 才有知识块）
             processed = [
@@ -312,20 +333,20 @@ class ToolExecutor:
         k = max(1, min(int(args.get("k_per_paper") or 3), 5))
         papers_out: list[dict] = []
         missing: list[str] = []
-        for sid in ids[:6]:  # 单次对比上限 6 篇（上下文保护）
+        for sid in ids:
             rec = self._lib.get(sid)
-            if rec is None and ":" not in sid:
-                # 模型常把 openalex:W... 简写成 W...；只接受完整后缀的唯一匹配。
-                matches = [pid for pid in self._lib.find(sid) if pid.split(":", 1)[-1] == sid]
-                if len(matches) > 1:
-                    raise ValueError(f"论文 ID {sid} 匹配多篇，请使用完整 source_id：{', '.join(matches)}")
-                if len(matches) == 1:
-                    sid = matches[0]
-                    rec = self._lib.get(sid)
             if rec is None:
                 missing.append(sid)
                 continue
             hits = self._retriever.retrieve(topic, k=k, paper_id=sid)
+            if self._scope.allowed is not None:
+                check_hits(hits, {"paper_id": sid})
+            field_hits = (
+                self._retriever.store.all_hits(paper_id=sid)
+                if callable(getattr(self._retriever.store, "all_hits", None)) else hits
+            )
+            if self._scope.allowed is not None:
+                check_hits(field_hits, {"paper_id": sid})
             structured = {}
             experiment_path = paths.knowledge_dir(self._cfg) / safe_dirname(sid) / "experiment.json"
             if experiment_path.exists():
@@ -340,8 +361,7 @@ class ToolExecutor:
                 "extracted_facts": structured if len(json.dumps(structured, ensure_ascii=False)) <= 2000 else {},
                 "field_evidence": load_bound_fields(
                     sid, self._cfg,
-                    self._retriever.store.all_hits(paper_id=sid)
-                    if callable(getattr(self._retriever.store, "all_hits", None)) else hits,
+                    field_hits,
                     max_chars=6000,
                 ),
                 "evidence": [
@@ -363,11 +383,7 @@ class ToolExecutor:
     # ------------------------------------------------------------------
 
     def _workspace(self, source_id: str) -> Path:
-        sid = str(source_id or "").strip()
-        if not sid:
-            raise ValueError("source_id 不能为空")
-        if self._lib.get(sid) is None:
-            raise ValueError(f"未找到论文：{sid}（source_id 需为库内 id）")
+        sid = self._scope.one(source_id)
         ws = paths.data_dir(self._cfg) / "repro" / safe_dirname(sid) / "workspace"
         ws.mkdir(parents=True, exist_ok=True)
         return ws
@@ -393,9 +409,7 @@ class ToolExecutor:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def _tool_read_plan(self, args: dict) -> dict:
-        sid = str(args.get("source_id") or "").strip()
-        if not sid:
-            raise ValueError("source_id 不能为空")
+        sid = self._scope.one(args.get("source_id"))
         rec = self._lib.get(sid)
         if rec is None:
             raise ValueError(f"未找到论文：{sid}")

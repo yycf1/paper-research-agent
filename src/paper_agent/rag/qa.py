@@ -16,6 +16,7 @@ from paper_agent.llm import chat
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.hybrid import bm25, fuse
 from paper_agent.rag.reranker import rerank
+from paper_agent.rag.scope import check_hits, query_scope
 from paper_agent.rag.tracing import capture_stage, hit_record
 from paper_agent.rag.vectorstore import Hit, VectorStore
 
@@ -44,7 +45,9 @@ class Retriever:
         self.notes: list[str] = []
 
     def retrieve(self, query: str, *, k: int = 5, paper_id: str | None = None,
+                 paper_ids: list[str] | None = None,
                  trace: dict | None = None) -> list[Hit]:
+        scope = query_scope(paper_id, paper_ids)
         self.notes = []
         started = time.perf_counter()
         options = self.cfg.get("retrieval", {})
@@ -59,19 +62,24 @@ class Retriever:
                          stages={s: [] for s in ("dense", "sparse", "fused", "reranked", "final")},
                          stage_status={s: "not_run" for s in ("dense", "sparse", "fused", "reranked", "final")},
                          timings_ms={}, notes=[], errors={})
+            if paper_ids is not None:
+                trace["paper_ids"] = scope["paper_ids"]
         if not query.strip() or k < 1:
             return []
         sparse = []
         if mode in {"bm25", "hybrid"}:
             stage_started = time.perf_counter()
-            sparse = bm25(query, self.store.all_hits(paper_id=paper_id), depth)
+            corpus = self.store.all_hits(**scope)
+            check_hits(corpus, scope)
+            sparse = bm25(query, corpus, depth)
             capture_stage(trace, "sparse", sparse, started=stage_started)
         dense = []
         if mode != "bm25":
             stage_started = time.perf_counter()
             try:
                 vector = self.embed_fn([query])[0]
-                dense = self.store.query(vector, k=depth, paper_id=paper_id)
+                dense = self.store.query(vector, k=depth, **scope)
+                check_hits(dense, scope)
                 capture_stage(trace, "dense", dense, started=stage_started)
             except Exception as exc:
                 capture_stage(trace, "dense", [], status="error", started=stage_started)
@@ -98,6 +106,7 @@ class Retriever:
                     trace["errors"]["reranked"] = type(exc).__name__
                 self.notes.append("重排序服务不可用，本次使用召回融合排序。")
                 logging.getLogger(__name__).warning("Reranker fallback: %s", type(exc).__name__)
+        check_hits(hits, scope)
         capture_stage(trace, "final", hits[:k])
         if trace is not None:
             trace["notes"] = list(self.notes)
@@ -150,6 +159,7 @@ def answer_question(
     history: list[tuple[str, str]] | None = None,
     k: int = 8,
     paper_id: str | None = None,
+    paper_ids: list[str] | None = None,
     chat_fn=chat,
     hits: list[Hit] | None = None,
     trace: dict | None = None,
@@ -160,6 +170,7 @@ def answer_question(
     (问题, 回答)，用于 REPL 里的指代消解。k 默认 8：块均约 600 token，
     8 块 ≈ 5k token 上下文，实测关键事实多排在 6~8 位，5 块容易漏。
     """
+    scope = query_scope(paper_id, paper_ids)
     if trace is not None:
         trace.update(question=question, retrieval_query=question, rewrite="not_run", calls=[])
         original_chat = chat_fn
@@ -208,10 +219,11 @@ def answer_question(
                 if trace is not None:
                     trace["rewrite"] = "error_fallback"
         if trace is None:
-            hits = retriever.retrieve(query, k=k, paper_id=paper_id)
+            hits = retriever.retrieve(query, k=k, **scope)
         else:
             trace["retrieval_query"] = query
-            hits = retriever.retrieve(query, k=k, paper_id=paper_id, trace=trace.setdefault("retrieval", {}))
+            hits = retriever.retrieve(query, k=k, **scope, trace=trace.setdefault("retrieval", {}))
+    check_hits(hits, scope)
     if not hits:
         return finish("向量库还没有内容：请先运行 `pa index` 建立索引。", [], "no_hits")
     threshold = retriever.cfg.get("retrieval", {}).get("min_rerank_score", 0.1)

@@ -209,7 +209,12 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "description": "就已入库论文内容问答，回答带出处引用；库外问题如实回答「未提及」",
         "inputSchema": {
             "type": "object",
-            "properties": {"question": {"type": "string"}},
+            "properties": {
+                "question": {"type": "string"},
+                "paper_id": {"type": "string", "description": "可选：只查询该论文，与 paper_ids 互斥"},
+                "paper_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 6,
+                              "description": "可选：查询论文子集；不能超出宿主指定的任务范围"},
+            },
             "required": ["question"],
         },
     },
@@ -233,6 +238,8 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
                 "paper_ids": {
                     "type": "array",
                     "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 6,
                     "description": "要对比的论文 id 列表（库内 source_id）；缺省取最近已入库的 4 篇",
                 },
                 "k_per_paper": {"type": "integer", "minimum": 1, "maximum": 5,

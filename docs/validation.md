@@ -4,6 +4,8 @@
 
 ## 2026-10-14 发布验证
 
+任务范围修复：完整回归 311 passed / 126.13 秒，改动 Python 文件通过 Ruff E4/E7/E9/F/I，CLI `agent --help` 可见重复 `--paper` 参数。新增测试覆盖越界读写/执行无副作用、空范围拒绝、多篇范围内的 BM25/向量召回、重排后边界、API 校验及轨迹/比较证据回读。全部离线；未据此评估真实模型遵循性或答案语义正确率。
+
 独立副本通过锁定依赖重装：Python 290 passed / 137.39 秒；前端 npm ci、生产构建通过，lint 退出码 0（四条既有警告）；CLI、健康接口、预打包首页与三题原创离线示例通过。未调用真实模型。详细结果保存到 [release_validation.json](release_validation.json)。GitHub CI 另在 Linux 的 Python 3.11/3.13 与 Node.js 22 上运行，结果以 Actions 为准。
 
 ## 2026-10-13 本地工程回归

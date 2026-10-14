@@ -130,11 +130,13 @@ class _RepeatGuard:
 class _TraceWriter:
     """JSONL 轨迹持久化：逐步追加写，中途崩溃也能复盘到已发生的步骤。"""
 
-    def __init__(self, path: Path, task: str, cfg: dict | None) -> None:
+    def __init__(self, path: Path, task: str, cfg: dict | None, *, allowed_paper_ids=None, anchor=None) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         self._f = path.open("w", encoding="utf-8")
-        self._emit({"type": "task", "task": task, "config": {"agent": (cfg or {}).get("agent", {})}})
+        self._emit({"type": "task", "task": task, "config": {"agent": (cfg or {}).get("agent", {})},
+                    "allowed_paper_ids": list(allowed_paper_ids) if allowed_paper_ids is not None else None,
+                    "anchor": anchor or ""})
 
     def _emit(self, obj: dict) -> None:
         self._f.write(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -265,13 +267,23 @@ def run_agent_task(
     token_budget = token_budget or cfg_budget
     keep_steps = cfg_keep if keep_steps is None else keep_steps
 
-    trace = _TraceWriter(Path(trace_path), task, cfg) if trace_path else None
+    allowed = getattr(executor, "allowed_paper_ids", None)
+    if anchor and isinstance(executor, ToolExecutor) and allowed != (anchor.strip(),):
+        raise ValueError("循环层 anchor 必须与执行器的实际论文作用域一致")
+    if isinstance(executor, ToolExecutor):
+        anchor = executor.anchor
+    trace = _TraceWriter(Path(trace_path), task, cfg, allowed_paper_ids=allowed, anchor=anchor) if trace_path else None
     if chat_fn is None:
         def chat_fn(messages, *, tools):
             return llm.chat_with_tools(messages, tools=tools, cfg=cfg)
 
     specs = executor.specs_for()
     system_prompt = SYSTEM_PROMPT
+    if allowed is not None:
+        system_prompt += (
+            f"\n\n任务论文范围：{', '.join(allowed)}。所有问答、比较、方案读取与代码操作"
+            "只允许使用这些论文；省略论文参数也不会扩大范围。不要尝试越界。"
+        )
     if (anchor or "").strip():
         system_prompt += (
             f"\n\n任务锚定：本任务只针对论文 {anchor.strip()}。read_repro_plan / write_code / "

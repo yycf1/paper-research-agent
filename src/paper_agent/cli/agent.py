@@ -51,6 +51,7 @@ def agent(
     token_budget: int = typer.Option(0, "--token-budget", min=0, help="token 预算（0 = 读 config.yaml）"),
     trace: bool = typer.Option(False, "--trace", help="把步骤轨迹持久化为 JSONL（data/traces/ 下）"),
     anchor: str = typer.Option("", "--anchor", help="锚定论文 id：约束本任务只针对该论文工作区（检索/入库类工具被移除，防续任务漂移）"),
+    paper: list[str] | None = typer.Option(None, "--paper", help="限定任务论文（可重复，最多 6 篇）"),
 ) -> None:
     """Agent 模式：模型自主决定调哪些工具、调多少轮（区别于 pa chat 的固定路由）。"""
     cfg = load_config()
@@ -64,7 +65,11 @@ def agent(
             console.print(f"[yellow]⚓ 任务锚定：{anchor_id}[/yellow]")
         store = VectorStore(_data_dir(cfg) / "db")
         retriever = Retriever(store) if store.count() > 0 else None
-        executor = ToolExecutor(lib=lib, retriever=retriever, cfg=cfg, confirm=_interactive_confirm, anchor=anchor_id)
+        try:
+            executor = ToolExecutor(lib=lib, retriever=retriever, cfg=cfg, confirm=_interactive_confirm,
+                                    anchor=anchor_id, allowed_paper_ids=paper)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
         trace_path = None
         if trace:

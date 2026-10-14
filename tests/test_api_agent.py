@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 from paper_agent.library import Library
 from paper_agent.llm import ChatResponse, ToolCall
 from paper_agent.models import Paper
-from paper_agent.server.app import create_app
 from paper_agent.server import routes as rt
+from paper_agent.server.app import create_app
 
 
 def _paper(sid: str, title: str) -> Paper:
@@ -69,6 +69,24 @@ def _wait_status(client: TestClient, tid: str, statuses: set[str], timeout: floa
 
 
 _PREVIEW = None  # 由 fixture 注入（避免模块级导入循环）
+
+
+def test_agent_multi_scope_validated_and_preserved(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    lib = Library(tmp_path / "data" / "library.db")
+    for sid in ("openalex:W1", "openalex:W2"):
+        lib.upsert_paper(_paper(sid, sid))
+    lib.close()
+    monkeypatch.setattr("paper_agent.llm.chat_with_tools", lambda *a, **kw: _final("done"))
+    for ids in ([], ["missing"], ["W1"] * 7):
+        assert client.post("/api/agent/tasks", json={"task": "compare", "allowed_paper_ids": ids}).status_code in {400, 422}
+    assert client.post("/api/agent/tasks", json={"task": "compare", "anchor_source_id": "W1",
+                                               "allowed_paper_ids": ["W1", "W2"]}).status_code == 400
+    response = client.post("/api/agent/tasks", json={"task": "compare", "allowed_paper_ids": ["W1", "W2"]})
+    assert response.status_code == 202
+    data = _wait_status(client, response.json()["id"], {"done", "error"})
+    assert data["status"] == "done"
+    assert data["allowed_paper_ids"] == ["openalex:W1", "openalex:W2"]
 
 
 def _patch_search(monkeypatch, papers):
@@ -176,7 +194,7 @@ def test_agent_task_confirm_gate_decline(monkeypatch, tmp_path):
     r = client.post(f"/api/agent/tasks/{tid}/confirm", json={"approve": False})
     assert r.status_code == 200
 
-    data = _wait_status(client, tid, {"done"})
+    _wait_status(client, tid, {"done"})
     lib = Library(tmp_path / "data" / "library.db")
     try:
         assert len(lib.list()) == 0  # 拒绝后未入库
