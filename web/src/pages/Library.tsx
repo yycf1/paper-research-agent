@@ -714,7 +714,7 @@ export default function Library({
                     checked={oaOnly}
                     onChange={(e) => setOaOnly(e.target.checked)}
                   />
-                  仅可下载全文
+                  仅有全文候选链接
                 </label>
               </div>
             )}

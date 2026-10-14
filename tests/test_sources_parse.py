@@ -1,16 +1,30 @@
 """数据源解析纯函数测试（离线，不联网）。"""
 
-import json
 
 from paper_agent.sources.arxiv import parse_atom
 from paper_agent.sources.europepmc import parse_hit
-from paper_agent.sources.openalex import rebuild_abstract
+from paper_agent.sources.openalex import parse_work, rebuild_abstract
 
 
 def test_openalex_rebuild_abstract():
     inv = {"world": [1], "Hello": [0]}
     assert rebuild_abstract(inv) == "Hello world"
     assert rebuild_abstract({}) == ""
+
+
+def test_openalex_keeps_repository_copies_before_landing_pages():
+    paper = parse_work({
+        "id": "https://openalex.org/W3217045679", "display_name": "Original fixture",
+        "best_oa_location": {"pdf_url": "https://publisher.example/paper.pdf"},
+        "open_access": {"oa_url": "https://doi.org/10.example/paper"},
+        "locations": [
+            {"is_oa": True, "pdf_url": "https://arxiv.org/pdf/2111.10778"},
+            {"is_oa": True, "pdf_url": "https://arxiv.org/pdf/2111.10778"},
+            {"is_oa": False, "pdf_url": "https://closed.example/paper.pdf"},
+        ],
+    })
+    assert paper.pdf_urls[:2] == ["https://publisher.example/paper.pdf", "https://arxiv.org/pdf/2111.10778"]
+    assert "https://closed.example/paper.pdf" not in paper.pdf_urls
 
 
 def test_europepmc_parse_hit():

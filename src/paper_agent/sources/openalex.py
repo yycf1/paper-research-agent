@@ -2,12 +2,14 @@
 
 API 文档：https://docs.openalex.org
 - search 支持自然语言关键词；摘要以倒排索引返回，需重建；
-- PDF 候选地址优先级：best_oa_location.pdf_url → open_access.oa_url → primary_location.pdf_url。
+- PDF 候选优先使用直接地址，收集 locations 中开放副本，再尝试 OA 落地页。
 """
 
 from __future__ import annotations
 
+import re
 import time
+from urllib.parse import urlsplit
 
 from paper_agent.models import Paper
 from paper_agent.sources import SourceUnavailable
@@ -17,7 +19,7 @@ _API = "https://api.openalex.org/works"
 
 _SELECT = (
     "id,doi,display_name,authorships,publication_year,cited_by_count,"
-    "abstract_inverted_index,open_access,best_oa_location,primary_location"
+    "abstract_inverted_index,open_access,best_oa_location,primary_location,locations"
 )
 
 
@@ -34,9 +36,13 @@ def parse_work(work: dict) -> Paper:
     oa = work.get("open_access") or {}
     best = work.get("best_oa_location") or {}
     primary = work.get("primary_location") or {}
+    locations = [loc for loc in (work.get("locations") or []) if loc.get("is_oa") is True]
     pdf_urls: list[str] = []
-    for url in (best.get("pdf_url"), oa.get("oa_url"), primary.get("pdf_url")):
-        if url and url not in pdf_urls:
+    candidates = [best.get("pdf_url"), *(loc.get("pdf_url") for loc in locations),
+                  primary.get("pdf_url"), oa.get("oa_url"), best.get("landing_page_url"),
+                  *(loc.get("landing_page_url") for loc in locations)]
+    for url in candidates:
+        if isinstance(url, str) and urlsplit(url).scheme in {"http", "https"} and url not in pdf_urls:
             pdf_urls.append(url)
     authors = [
         a.get("author", {}).get("display_name", "") for a in (work.get("authorships") or [])
@@ -59,6 +65,18 @@ def parse_work(work: dict) -> Paper:
 
 def parse_response(data: dict) -> list[Paper]:
     return [p for p in (parse_work(w) for w in data.get("results", [])) if p.title]
+
+
+def refresh_pdf_urls(source_id: str, *, proxy: str = "") -> list[str]:
+    """旧 OpenAlex 记录下载失败后，按已有 Work ID 查询开放副本；最多一次元数据请求。"""
+    match = re.fullmatch(r"openalex:(W\d+)", source_id)
+    if not match:
+        return []
+    response = http_get(f"{_API}/{match[1]}", params={"select": "id,display_name,open_access,best_oa_location,primary_location,locations"},
+                        proxy=proxy, timeout=(6, 15), retries=0)
+    if response.status_code != 200:
+        raise SourceUnavailable(f"OpenAlex 开放副本查询 HTTP {response.status_code}")
+    return parse_work(response.json()).pdf_urls
 
 
 def build_params(

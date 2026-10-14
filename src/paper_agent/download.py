@@ -1,110 +1,177 @@
-"""OA PDF 下载：多候选地址依次尝试，HTML 落地页自动跟随 citation_pdf_url，%PDF 魔数校验。
-
-检索源给的「全文链接」并不总是真 PDF——OpenAlex 等常把 DOI 落地页（HTML 文章页）
-存成 pdf_url。落地页通常带标准元数据 <meta name="citation_pdf_url">（OJS 平台与
-多数出版社都有），解析出真实 PDF 地址插回候选队列重试一次。
-"""
+"""候选全文下载：开放副本回退、有界重试、落地页解析与真实 PDF 校验。"""
 
 from __future__ import annotations
 
-import re
+import time
+import uuid
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
+import pymupdf
 import requests
 
 from paper_agent.models import Paper
+from paper_agent.sources import SourceUnavailable
+from paper_agent.sources.openalex import refresh_pdf_urls
 
 _UA = "paper-agent/0.1 (personal research reading tool)"
-
-# citation_pdf_url 的两种属性顺序都兼容
-_CITATION_PDF_RES = [
-    re.compile(
-        r"<meta[^>]+name=[\"']citation_pdf_url[\"'][^>]+content=[\"']([^\"']+)[\"']",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+name=[\"']citation_pdf_url[\"']",
-        re.IGNORECASE,
-    ),
-]
-_LANDING_SCAN_BYTES = 256 * 1024  # 落地页元数据都在页首，扫描上限防爆内存
+_LANDING_SCAN_BYTES = 256 * 1024
+_MAX_REQUESTS = 12  # 包括落地页和重试，另允许一次 OpenAlex 元数据查询。
+_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024
+_RETRY_DELAY = 3
 
 
 class DownloadError(Exception):
-    """所有候选地址均下载失败。"""
+    """没有可下载/可校验的全文；错误保留来源拒绝、网络与内容原因。"""
 
 
 def safe_dirname(source_id: str) -> str:
-    """source_id 转目录名：Windows 不允许 ':'，统一替换为 '_'。"""
     return source_id.replace(":", "_").replace("/", "_")
 
 
+class _PdfMeta(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        data = {name.lower(): value for name, value in attrs}
+        name = (data.get("name") or data.get("property") or "").lower()
+        if tag == "meta" and name == "citation_pdf_url" and data.get("content"):
+            self.urls.append(data["content"])
+        if tag == "link" and (data.get("type") or "").lower() == "application/pdf" and data.get("href"):
+            self.urls.append(data["href"])
+
+
 def _citation_pdf_url(head: bytes, chunks) -> str | None:
-    """从 HTML 落地页提取 citation_pdf_url；无则 None。"""
-    buf = head
+    buf = head[:_LANDING_SCAN_BYTES]
+    parser = _PdfMeta()
+    parser.feed(buf.decode("utf-8", errors="replace"))
+    if parser.urls:
+        return parser.urls[0]
     for chunk in chunks:
-        buf += chunk
-        if len(buf) > _LANDING_SCAN_BYTES:
+        if len(buf) >= _LANDING_SCAN_BYTES:
             break
-    text = buf.decode("utf-8", errors="replace")
-    for pattern in _CITATION_PDF_RES:
-        m = pattern.search(text)
-        if m:
-            return m.group(1)
-    return None
+        buf += chunk[:_LANDING_SCAN_BYTES - len(buf)]
+        parser = _PdfMeta()
+        parser.feed(buf.decode("utf-8", errors="replace"))
+        if parser.urls:
+            return parser.urls[0]
+    return parser.urls[0] if parser.urls else None
+
+
+def _refresh_candidates(paper: Paper, proxy: str) -> list[str]:
+    return refresh_pdf_urls(paper.source_id, proxy=proxy)
+
+
+def _display_url(url: str) -> str:
+    """错误信息不携带下载地址的查询凭据。"""
+    parsed = urlsplit(url)
+    return urlunsplit((parsed.scheme, parsed.hostname or "", parsed.path, "", ""))
+
+
+def _validate_pdf(path: Path) -> None:
+    try:
+        with pymupdf.open(path) as doc:
+            if doc.needs_pass or doc.page_count == 0:
+                raise ValueError("PDF 需要密码或没有可读页面")
+            doc.load_page(0)
+    except Exception as exc:
+        raise ValueError(f"PDF 完整性校验失败：{exc}") from exc
 
 
 def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
-    """依次尝试 paper.pdf_urls；内容校验通过才落盘。全部失败抛 DownloadError。
+    """最多 12 次候选/重试请求；通过文件校验后原子替换，失败不覆盖旧文件。
 
-    校验规则：前 64KB 含 %PDF 魔数，或 Content-Type 声明为 pdf——
-    防止把 HTML 落地页/验证页误存成 .pdf。HTML 响应会尝试解析
-    citation_pdf_url 元数据并插队重试（落地页回退）。
+    403/404 不对同一地址重试。连接错误、429/5xx 至多重试一次；429 的
+    Retry-After 超过 3 秒时直接换候选。旧 OpenAlex 候选用尽后查询一次
+    同 Work 的开放副本，不解验证码或绕过访问限制。
     """
     if not paper.pdf_urls:
-        raise DownloadError("无可用的 PDF 链接（仅摘要论文）")
-    dest_dir = papers_dir / safe_dirname(paper.source_id)
+        raise DownloadError("无候选全文链接；当前只有文献信息，可导入本地 PDF/DOCX")
+    root = papers_dir.resolve()
+    dest_dir = (root / safe_dirname(paper.source_id)).resolve()
+    if dest_dir == root or not dest_dir.is_relative_to(root):
+        raise DownloadError("论文文件目录超出文献目录")
     dest_dir.mkdir(parents=True, exist_ok=True)
     out = dest_dir / "paper.pdf"
-    tmp = dest_dir / "paper.pdf.part"
+    tmp = dest_dir / f"paper.{uuid.uuid4().hex}.pdf.part"
     proxies = {"http": proxy, "https": proxy} if proxy else None
     errors: list[str] = []
-
     tried: set[str] = set()
     queue = list(paper.pdf_urls)
-    while queue:
+    refreshed = False
+    requests_used = 0
+    while requests_used < _MAX_REQUESTS:
+        if not queue:
+            if refreshed:
+                break
+            refreshed = True
+            try:
+                queue.extend(url for url in _refresh_candidates(paper, proxy) if url not in tried)
+            except (SourceUnavailable, requests.RequestException, ValueError) as exc:
+                errors.append(f"开放副本查询失败：{exc}")
+            if not queue:
+                break
         url = queue.pop(0)
         if url in tried:
             continue
         tried.add(url)
-        try:
-            with requests.get(
-                url,
-                stream=True,
-                timeout=(10, 120),
-                proxies=proxies,
-                headers={"User-Agent": _UA},
-            ) as resp:
-                if resp.status_code != 200:
-                    errors.append(f"{url} -> HTTP {resp.status_code}")
-                    continue
-                chunks = resp.iter_content(chunk_size=65536)
-                head = next(chunks, b"")
-                content_type = resp.headers.get("content-type", "").lower()
-                if b"%PDF" not in head and "pdf" not in content_type:
-                    errors.append(f"{url} -> 非 PDF 内容（{content_type or '未知类型'}）")
-                    if "html" in content_type:
-                        landed = _citation_pdf_url(head, chunks)
-                        if landed and landed not in tried:
-                            queue.insert(0, landed)  # 真实 PDF 插队，保持候选优先级
-                    continue
-                with tmp.open("wb") as f:
-                    f.write(head)
-                    for chunk in chunks:
-                        f.write(chunk)
-                tmp.replace(out)
-                return out
-        except requests.RequestException as exc:
-            errors.append(f"{url} -> {exc}")
+        if urlsplit(url).scheme not in {"http", "https"}:
+            errors.append("忽略非 HTTP 全文地址")
             continue
-    raise DownloadError("; ".join(errors))
+        for attempt in range(2):
+            if requests_used >= _MAX_REQUESTS:
+                break
+            requests_used += 1
+            retry = False
+            try:
+                with requests.get(url, stream=True, timeout=(10, 30), proxies=proxies,
+                                  headers={"User-Agent": _UA}) as resp:
+                    if resp.status_code != 200:
+                        hint = "（来源拒绝访问，可尝试其他开放副本或手动导入）" if resp.status_code in {401, 403} else ""
+                        errors.append(f"{_display_url(url)} -> HTTP {resp.status_code}{hint}")
+                        retry_after = resp.headers.get("Retry-After", "0")
+                        short_wait = retry_after.isdigit() and int(retry_after) <= _RETRY_DELAY
+                        retry = attempt == 0 and (resp.status_code in {500, 502, 503, 504} or (resp.status_code == 429 and short_wait))
+                    else:
+                        chunks = resp.iter_content(chunk_size=65536)
+                        head = next(chunks, b"")
+                        content_type = resp.headers.get("content-type", "").lower()
+                        if not head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"%PDF-"):
+                            errors.append(f"{_display_url(url)} -> 非 PDF 内容（{content_type or '未知类型'}）")
+                            if "html" in content_type or head.lstrip().startswith(b"<"):
+                                landed = _citation_pdf_url(head, chunks)
+                                if landed:
+                                    candidate = urljoin(getattr(resp, "url", url), landed)
+                                    if candidate not in tried:
+                                        queue.insert(0, candidate)
+                            break
+                        total = len(head)
+                        with tmp.open("wb") as output:
+                            output.write(head)
+                            for chunk in chunks:
+                                total += len(chunk)
+                                if total > _MAX_DOWNLOAD_BYTES:
+                                    raise ValueError("全文超过 100 MiB 下载限制，请手动导入")
+                                output.write(chunk)
+                        _validate_pdf(tmp)
+                        tmp.replace(out)
+                        return out
+            except requests.RequestException as exc:
+                errors.append(f"{_display_url(url)} -> 网络异常（{type(exc).__name__}）")
+                retry = attempt == 0
+            except ValueError as exc:
+                errors.append(f"{_display_url(url)} -> {exc}")
+            except OSError as exc:
+                raise DownloadError(f"本地文件写入失败：{exc}") from exc
+            finally:
+                # 唯一临时文件在已验证的文献子目录内；只清理本次请求创建的文件。
+                tmp.unlink(missing_ok=True)
+            if not retry or requests_used >= _MAX_REQUESTS:
+                break
+            time.sleep(_RETRY_DELAY)
+    if requests_used >= _MAX_REQUESTS:
+        errors.append("已达单篇 12 次请求上限")
+    raise DownloadError("; ".join(errors) or "没有可验证的 PDF 全文")

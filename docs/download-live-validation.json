@@ -1,0 +1,110 @@
+{
+  "date": "2026-10-14",
+  "personal_library_modified": false,
+  "model_calls": 0,
+  "results": [
+    {
+      "work_id": "openalex:W3217045679",
+      "result": "downloaded_and_parsed",
+      "bytes": 1433623,
+      "pages": 25,
+      "first_page_text_chars": 3918,
+      "sha256": "29e2e04b47a62a0ac5808a5c500236857bd30c68bfea41cf34d17dc724b114aa",
+      "seconds": 16.22,
+      "attempts": [
+        {
+          "url": "https://dl.acm.org/doi/pdf/10.1145/3501815",
+          "status": 403,
+          "final_url": "https://dl.acm.org/doi/pdf/10.1145/3501815",
+          "seconds": 2.34
+        },
+        {
+          "url": "https://api.openalex.org/works/W3217045679",
+          "status": 200,
+          "final_url": "https://api.openalex.org/works/W3217045679",
+          "seconds": 3.06
+        },
+        {
+          "url": "https://arxiv.org/pdf/2111.10778",
+          "status": 200,
+          "final_url": "https://arxiv.org/pdf/2111.10778",
+          "seconds": 3.45
+        }
+      ]
+    },
+    {
+      "work_id": "openalex:W4382998948",
+      "result": "downloaded_and_parsed",
+      "bytes": 1608039,
+      "pages": 12,
+      "first_page_text_chars": 5924,
+      "sha256": "719860a479b3c114c0ad9aa23ea0e6d794658116021c74c104a23177f0e20a93",
+      "seconds": 43.57,
+      "attempts": [
+        {
+          "url": "https://hull-repository.worktribe.com/preview/4537002/IEEE%20TMI__LViT-2023_AccptedVer2.pdf",
+          "status": 403,
+          "final_url": "https://hull-repository.worktribe.com/preview/4537002/IEEE%20TMI__LViT-2023_AccptedVer2.pdf",
+          "seconds": 2.42
+        },
+        {
+          "url": "https://api.openalex.org/works/W4382998948",
+          "status": 200,
+          "final_url": "https://api.openalex.org/works/W4382998948",
+          "seconds": 6.69
+        },
+        {
+          "url": "https://arxiv.org/pdf/2206.14718",
+          "status": 200,
+          "final_url": "https://arxiv.org/pdf/2206.14718",
+          "seconds": 1.41
+        }
+      ]
+    },
+    {
+      "work_id": "openalex:W2905224888",
+      "result": "downloaded_and_parsed",
+      "bytes": 3335058,
+      "pages": 26,
+      "first_page_text_chars": 4980,
+      "sha256": "fc780cc174bd2461a4a6d3a6135d9331d943b9808710f75c743c0ab339f7354e",
+      "seconds": 56.75,
+      "attempts": [
+        {
+          "url": "https://arxiv.org/pdf/1812.08434",
+          "status": 200,
+          "final_url": "https://arxiv.org/pdf/1812.08434",
+          "seconds": 2.17
+        },
+        {
+          "url": "https://arxiv.org/pdf/1812.08434",
+          "status": 200,
+          "final_url": "https://arxiv.org/pdf/1812.08434",
+          "seconds": 1.94
+        }
+      ]
+    },
+    {
+      "work_id": "openalex:W4385572149",
+      "result": "downloaded_and_parsed",
+      "bytes": 471880,
+      "pages": 29,
+      "first_page_text_chars": 4359,
+      "sha256": "285e30f2b38bd0d543bd2c222189d4d9977b654b443b7bdbdb2abe025d7c46ed",
+      "seconds": 43.21,
+      "attempts": [
+        {
+          "url": "https://aclanthology.org/2023.nlrse-1.7.pdf",
+          "error_type": "ConnectionError",
+          "seconds": 5.01
+        },
+        {
+          "url": "https://aclanthology.org/2023.nlrse-1.7.pdf",
+          "status": 200,
+          "final_url": "https://aclanthology.org/2023.nlrse-1.7.pdf",
+          "seconds": 4.69
+        }
+      ]
+    }
+  ]
+}
