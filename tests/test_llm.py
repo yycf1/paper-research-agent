@@ -84,7 +84,7 @@ def test_chat_gives_up_after_max_attempts(monkeypatch):
     assert completions.calls == llm._MAX_ATTEMPTS
 
 
-def test_chat_missing_key():
+def test_chat_missing_key(monkeypatch):
     from paper_agent import llm
 
     monkey_cfg = {"llm": {}}
@@ -92,9 +92,26 @@ def test_chat_missing_key():
     llm_module = llm
     llm_module_load = lambda: {"llm": {}}
     # 无 Key 直接报错（resolve_endpoint 返回空 api_key）
-    llm_module.load_config = llm_module_load
-    llm_module.resolve_endpoint = lambda raw: type(
+    monkeypatch.setattr(llm_module, "load_config", llm_module_load)
+    monkeypatch.setattr(llm_module, "resolve_endpoint", lambda raw: type(
         "E", (), {"base_url": "http://x", "model": "m", "api_key": monkeypatch_set["api_key"]}
-    )()
+    )())
     with pytest.raises(RuntimeError, match="Key"):
         llm.chat([{"role": "user", "content": "hi"}], cfg=monkey_cfg)
+
+
+def test_balance_exhausted_is_not_retried_as_rate_limit(monkeypatch):
+    from paper_agent import llm
+    calls = []
+    class BalanceCompletions:
+        def create(self, **kw):
+            calls.append(kw)
+            raise RateLimitError("balance exhausted", response=_FakeResp(),
+                                 body={"error": {"code": "1113", "message": "余额不足"}})
+    monkeypatch.setattr(llm, "OpenAI", lambda **kw: _FakeClient(BalanceCompletions()))
+    monkeypatch.setattr(llm, "resolve_endpoint",
+        lambda raw: type("E", (), {"base_url": "http://x", "model": "m", "api_key": "k"})())
+    monkeypatch.setattr(llm.time, "sleep", lambda s: pytest.fail("余额不足不应退避重试"))
+    with pytest.raises(RuntimeError, match="余额不足"):
+        llm.chat([{"role": "user", "content": "hi"}], cfg={"llm": {}})
+    assert len(calls) == 1

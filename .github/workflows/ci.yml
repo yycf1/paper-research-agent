@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -21,10 +25,32 @@ jobs:
           enable-cache: true
 
       - name: 安装依赖
-        run: uv sync --dev
+        run: uv sync --locked --dev
 
       - name: 运行测试
         run: uv run pytest -q
 
       - name: CLI 冒烟检查
         run: uv run pa --help
+
+      - name: 无密钥离线证据示例
+        run: uv run pa eval-evidence --dataset examples/offline-evidence/cases.json --snapshot examples/offline-evidence/corpus.json --mode bm25 --k 2 --output data/evidence-eval/ci-demo.json
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: 安装前端依赖
+        working-directory: web
+        run: npm ci
+      - name: 前端检查
+        working-directory: web
+        run: npm run lint
+      - name: 生产构建
+        working-directory: web
+        run: npm run build

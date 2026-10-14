@@ -348,7 +348,7 @@ export default function Library({
   const groups = tagInfo?.tags ?? [];
 
   return (
-    <div className="library">
+    <div className={`library${detailId ? " with-detail" : ""}`}>
       <div className="list-pane">
         <div className="lib-head">
           <div className="lib-row main">

@@ -44,6 +44,30 @@ def _hit(text: str, section: str = "3 Method", page: int = 5) -> SimpleNamespace
 # ---------------------------------------------------------------------------
 
 
+def test_compare_accepts_unique_id_without_source_prefix(tmp_path):
+    lib = _seed_lib(tmp_path, ["openalex:W1", "openalex:W2"])
+    ex = _executor(tmp_path, lib=lib, retriever=_fake_retriever({"openalex:W1": [_hit("方法A")]}))
+    r = ex.execute("compare_papers", json.dumps({"topic": "方法", "paper_ids": ["W1"]}))
+    assert r.ok and r.data["missing"] == []
+    assert r.data["papers"][0]["paper_id"] == "openalex:W1"
+    assert r.data["papers"][0]["evidence"]
+
+
+def test_compare_rejects_ambiguous_source_suffix(tmp_path):
+    lib = _seed_lib(tmp_path, ["openalex:W1", "local:W1"])
+    ex = _executor(tmp_path, lib=lib, retriever=_fake_retriever({}))
+    r = ex.execute("compare_papers", json.dumps({"topic": "方法", "paper_ids": ["W1"]}))
+    assert r.status == "fatal" and "匹配多篇" in r.error
+
+
+def test_compare_does_not_truncate_dataset_evidence_at_280_chars(tmp_path):
+    lib = _seed_lib(tmp_path, ["openalex:W1"])
+    evidence = "Context. " * 50 + "Datasets: Beibei, Taobao, Yelp."
+    ex = _executor(tmp_path, lib=lib, retriever=_fake_retriever({"openalex:W1": [_hit(evidence)]}))
+    r = ex.execute("compare_papers", json.dumps({"topic": "datasets", "paper_ids": ["W1"]}))
+    assert "Beibei, Taobao, Yelp" in r.data["papers"][0]["evidence"][0]["text"]
+
+
 def _fake_retriever(hits_by_paper: dict[str, list]) -> SimpleNamespace:
     return SimpleNamespace(
         store=SimpleNamespace(count=lambda: 42),

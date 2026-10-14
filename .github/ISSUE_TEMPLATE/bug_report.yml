@@ -1,0 +1,24 @@
+name: 问题反馈
+description: 提供可重复的操作步骤与脱敏错误信息
+title: "[Bug] "
+body:
+  - type: textarea
+    id: steps
+    attributes:
+      label: 操作步骤
+      description: 输入的命令或页面操作，以及预期与实际行为。
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 系统、Python/Node 版本、项目提交版本及相关配置（不要填写密钥）。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志
+      description: 请移除 API Key、私人路径与不允许公开的文献内容。
+      render: text

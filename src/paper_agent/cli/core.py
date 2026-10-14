@@ -16,7 +16,7 @@ from paper_agent import paths
 from paper_agent.library import Library, PaperRecord
 
 app = typer.Typer(
-    help="paper-agent：文献阅读复现 Agent（检索→下载→解析→实验知识提取→RAG问答）",
+    help="个人文献库智能体：多源检索、筛选入库、多轮问答与跨论文对比",
     no_args_is_help=True,
 )
 console = Console()

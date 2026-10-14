@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "corpus_sha256": "23594b6df13b2f3c5dc9ab81d092daba1a81831929ffedf35153e96f4267b2ce",
+  "hits": [
+    {
+      "paper_id": "synthetic:alpha",
+      "title": "Synthetic Alpha (original demo)",
+      "section": "Introduction",
+      "page": 1,
+      "text": "Synthetic study Alpha investigates image segmentation using DATA-ALPHA.",
+      "distance": 0.0,
+      "chunk_id": "synthetic:alpha::0",
+      "relevance_score": null,
+      "text_sha256": "358cb1bbb313f5078268785234ed3e5897aa4978c922cd59bf21327c99cf3b91"
+    },
+    {
+      "paper_id": "synthetic:alpha",
+      "title": "Synthetic Alpha (original demo)",
+      "section": "Results",
+      "page": 2,
+      "text": "Synthetic study Alpha reports Dice 0.91 on DATA-ALPHA test split. Accuracy 0.99 is a different metric.",
+      "distance": 0.0,
+      "chunk_id": "synthetic:alpha::1",
+      "relevance_score": null,
+      "text_sha256": "1f64a73dd97848758cb89d7c85063b59ec2452dd91691bc89130ad380af73afa"
+    },
+    {
+      "paper_id": "synthetic:beta",
+      "title": "Synthetic Beta (original demo)",
+      "section": "Results",
+      "page": 3,
+      "text": "Synthetic study Beta reports Dice 0.88 on DATA-BETA validation split. Its evaluation split differs from Alpha.",
+      "distance": 0.0,
+      "chunk_id": "synthetic:beta::0",
+      "relevance_score": null,
+      "text_sha256": "ae78b35f71c42e44ec2f96f3d2829c195b86c1541cecedc29ee67a0c29d6fd7e"
+    }
+  ]
+}

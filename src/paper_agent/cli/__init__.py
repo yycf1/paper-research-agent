@@ -4,7 +4,7 @@
 （pyproject 的 `pa` 入口指向 `paper_agent.cli:app`）。
 """
 
+from paper_agent.cli import admin, agent, diagnostics, flow, ingest, mcp, qa  # noqa: F401  导入即注册命令
 from paper_agent.cli.core import app
-from paper_agent.cli import admin, agent, flow, ingest, mcp, qa  # noqa: F401  导入即注册命令
 
 __all__ = ["app"]

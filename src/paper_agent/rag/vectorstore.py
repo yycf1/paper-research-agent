@@ -6,8 +6,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
+
+# Chroma publishes a process-wide system before its native bindings finish starting.
+# Concurrent first requests must not obtain that partially initialized system.
+_CLIENT_INIT_LOCK = Lock()
 
 
 @dataclass
@@ -20,6 +26,8 @@ class Hit:
     page: int
     text: str
     distance: float
+    chunk_id: str = ""
+    relevance_score: float | None = None
 
 
 class VectorStore:
@@ -29,10 +37,21 @@ class VectorStore:
         import chromadb
 
         path.mkdir(parents=True, exist_ok=True)
-        self.client = chromadb.PersistentClient(path=str(path))
-        self.collection = self.client.get_or_create_collection(
-            "papers", metadata={"hnsw:space": "cosine"}
-        )
+        # Windows HNSW 原生读取器无法重新打开中文绝对路径；相同文件使用
+        # ASCII 相对路径可正确恢复。启动器固定 cwd 为项目根，避免全局 chdir。
+        storage_path = str(path.resolve())
+        if os.name == "nt" and not storage_path.isascii():
+            try:
+                relative = os.path.relpath(path.resolve(), Path.cwd())
+                if relative.isascii():
+                    storage_path = relative
+            except ValueError:
+                pass  # 不同盘符时保持原路径；可在配置中指定 ASCII 数据目录
+        with _CLIENT_INIT_LOCK:
+            self.client = chromadb.PersistentClient(path=storage_path)
+            self.collection = self.client.get_or_create_collection(
+                "papers", metadata={"hnsw:space": "cosine"}
+            )
 
     # ---- 写入 ----
 
@@ -77,6 +96,18 @@ class VectorStore:
 
     # ---- 查询 ----
 
+    def all_hits(self, *, paper_id: str | None = None) -> list[Hit]:
+        """BM25 与向量索引共享同一份块，删除/重建无需同步第二份索引。"""
+        rows = self.collection.get(
+            where={"paper_id": {"$eq": paper_id}} if paper_id else None,
+            include=["documents", "metadatas"],
+        )
+        return [Hit(
+            paper_id=m.get("paper_id", ""), title=m.get("title", ""),
+            section=m.get("section", ""), page=int(m.get("page", 0)),
+            text=doc, distance=1.0, chunk_id=cid,
+        ) for cid, doc, m in zip(rows["ids"], rows["documents"], rows["metadatas"])]
+
     def query(
         self,
         embedding: list[float],
@@ -93,8 +124,8 @@ class VectorStore:
             include=["documents", "metadatas", "distances"],
         )
         hits: list[Hit] = []
-        for doc, meta, dist in zip(
-            res["documents"][0], res["metadatas"][0], res["distances"][0]
+        for cid, doc, meta, dist in zip(
+            res["ids"][0], res["documents"][0], res["metadatas"][0], res["distances"][0]
         ):
             hits.append(
                 Hit(
@@ -104,6 +135,7 @@ class VectorStore:
                     page=int(meta.get("page", 0)),
                     text=doc,
                     distance=float(dist),
+                    chunk_id=cid,
                 )
             )
         return hits

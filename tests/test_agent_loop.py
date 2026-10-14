@@ -52,6 +52,24 @@ def _final(text: str) -> ChatResponse:
     return ChatResponse(content=text, tool_calls=[], usage={"prompt": 100, "completion": 20, "model": "fake"})
 
 
+def test_compare_tool_message_keeps_second_paper_evidence():
+    from paper_agent.tools import ToolResult
+    class Executor:
+        def specs_for(self):
+            return ToolExecutor.specs()
+        def execute(self, name, arguments):
+            return ToolResult(tool=name, status="ok", data={"papers": [
+                {"paper_id": "paper-one", "evidence": "A" * 6000},
+                {"paper_id": "paper-two", "evidence": "second paper evidence"},
+            ]})
+    captured = []
+    run_agent_task("compare", executor=Executor(), max_steps=3,
+        chat_fn=_scripted_chat([_tool_resp("compare_papers", '{"topic":"datasets"}'), _final("done")], captured))
+    message = next(m for m in captured[1][0] if m["role"] == "tool")
+    data = json.loads(message["content"])["data"]
+    assert data["papers"][1]["evidence"] == "second paper evidence"
+
+
 def _scripted_chat(script: list[ChatResponse], captured: list | None = None):
     """按脚本依次返回；脚本耗尽或 tools 为空（熔断收尾）时返回兜底最终回答。"""
 

@@ -94,6 +94,7 @@ export interface SourceRef {
   title: string;
   section: string;
   page: number;
+  chunks?: { n: number; chunk_id: string; page: number; text: string }[];
 }
 
 export interface AskReply {
@@ -155,6 +156,30 @@ export interface AgentStepView {
   status: "ok" | "degraded" | "retryable_error" | "fatal";
   detail: string;
   duration_ms: number;
+  comparison?: { papers: { paper_id: string; title: string; field_evidence: BoundFields }[] } | null;
+}
+
+export interface FieldFact {
+  field: "research_goal" | "datasets" | "metrics";
+  raw_value: unknown;
+  normalized_value: string | Record<string, string | number | null> | null;
+  citation_status: "valid" | "missing" | "invalid";
+  support_status: "unknown" | "unverified" | "supported" | "unsupported" | "conflict" | "not_applicable";
+  claim_sha256: string;
+  issues: string[];
+  evidence: { paper_id: string; chunk_id: string; section: string; page: number | null; quote: string }[];
+  review: { reviewer: string; review_kind: string; note: string } | null;
+}
+
+export interface BoundFields {
+  paper_id: string;
+  source_version: string;
+  fields: Record<FieldFact["field"], FieldFact[]>;
+  omitted: Partial<Record<FieldFact["field"], number>>;
+  unmatched_reviews: number;
+  load_issues: string[];
+  numeric_comparison: { ranking_allowed: boolean; reason: string };
+  title?: string;
 }
 
 /** Agent 任务状态：轮询 /agent/tasks/{id} 增量可见。 */
@@ -248,6 +273,7 @@ export const api = {
     return req<{ total: number; papers: Paper[] }>(`/papers?${usp}`);
   },
   paper: (id: string) => req<PaperDetail>(`/papers/${encodeURIComponent(id)}`),
+  paperFacts: (id: string) => req<BoundFields>(`/papers/${encodeURIComponent(id)}/facts`),
   deletePaper: (id: string) =>
     req<{ ok: boolean }>(`/papers/${encodeURIComponent(id)}`, { method: "DELETE" }),
   tags: () => req<TagsReply>("/tags"),

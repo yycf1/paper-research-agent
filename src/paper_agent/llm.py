@@ -59,13 +59,18 @@ def _complete(
 ) -> ChatResponse:
     """限流退避重试的补全核心（chat / chat_with_tools 共用）。"""
     cfg = cfg or load_config()
+    if thinking is None:
+        thinking = cfg.get("llm", {}).get("thinking")
     ep = resolve_endpoint(cfg["llm"])
     if not ep.api_key:
         raise RuntimeError("未配置 LLM API Key：请复制 .env.example 为 .env 并填入 Key")
     client = OpenAI(base_url=ep.base_url, api_key=ep.api_key, timeout=180, max_retries=2)
     extra: dict = {}
     if thinking is not None:
-        extra["extra_body"] = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+        extra["extra_body"] = (
+            {"enable_thinking": thinking} if "siliconflow" in ep.base_url
+            else {"thinking": {"type": "enabled" if thinking else "disabled"}}
+        )
     if tools:
         extra["tools"] = tools
         if tool_choice:
@@ -94,6 +99,13 @@ def _complete(
             ]
             return ChatResponse(content=getattr(msg, "content", None), tool_calls=tool_calls, usage=usage_dict)
         except RateLimitError as exc:
+            body = exc.body if isinstance(exc.body, dict) else {}
+            error = body.get("error", body)
+            error = error if isinstance(error, dict) else {}
+            code = str(error.get("code", ""))
+            message = str(error.get("message", ""))
+            if code == "1113" or "余额不足" in message or "insufficient_quota" in (code, error.get("type")):
+                raise RuntimeError("模型账户余额不足或无可用额度：请在设置中切换可用模型或补充额度。") from exc
             last_exc = exc
             if attempt < _MAX_ATTEMPTS - 1:
                 wait = _BACKOFF_SECONDS[min(attempt, len(_BACKOFF_SECONDS) - 1)]

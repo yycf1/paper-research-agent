@@ -12,7 +12,12 @@ from pydantic import BaseModel, Field
 
 from paper_agent import __version__, paths
 from paper_agent.chatstore import ChatStore
-from paper_agent.config import load_config, load_runtime_settings, resolve_endpoint, settings_path
+from paper_agent.config import (
+    load_config,
+    load_runtime_settings,
+    resolve_endpoint,
+    settings_path,
+)
 from paper_agent.download import safe_dirname
 from paper_agent.graph.pipeline import run_pipeline
 from paper_agent.library import Library, PaperRecord
@@ -20,12 +25,17 @@ from paper_agent.llm import test_endpoint
 from paper_agent.models import Paper
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.rag.vectorstore import VectorStore
+from paper_agent.server import agent_jobs, jobs
 from paper_agent.services.assistant import handle_message, suggest_directions
-from paper_agent.services.library_ops import UnsupportedFormat, delete_paper, import_local_file
+from paper_agent.services.facts import load_bound_fields
+from paper_agent.services.library_ops import (
+    UnsupportedFormat,
+    delete_paper,
+    import_local_file,
+)
 from paper_agent.services.process import process_paper
 from paper_agent.services.repro import generate_repro_plan
 from paper_agent.services.search import PreviewResult, ingest_papers, search_sources
-from paper_agent.server import agent_jobs, jobs
 
 router = APIRouter()
 
@@ -184,6 +194,17 @@ def api_delete_tag(name: str, lib: Library = Depends(open_lib)) -> dict:
         raise HTTPException(404, f"分组不存在：{name}")
     moved = lib.delete_group(name)
     return {"ok": True, "ungrouped": moved}
+
+
+@router.get("/papers/{sid}/facts")
+def api_paper_facts(sid: str, lib: Library = Depends(open_lib)) -> dict:
+    rec = lib.get(sid)
+    if rec is None:
+        raise HTTPException(404, "论文不存在")
+    cfg = load_config()
+    store = VectorStore(paths.vector_dir(cfg))
+    result = load_bound_fields(sid, cfg, store.all_hits(paper_id=sid))
+    return {"title": rec.paper.title, **result}
 
 
 @router.get("/papers/{sid}")

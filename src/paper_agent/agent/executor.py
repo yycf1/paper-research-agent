@@ -31,6 +31,7 @@ from paper_agent.download import safe_dirname
 from paper_agent.library import Library
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.services.assistant import suggest_directions
+from paper_agent.services.facts import load_bound_fields
 from paper_agent.services.search import Candidate, ingest_papers, search_sources
 from paper_agent.tools import TOOL_REGISTRY, ToolResult, run_tool
 
@@ -40,8 +41,19 @@ _MAX_CODE_BYTES = 30 * 1024  # 单文件代码上限
 # 锚定任务的工具作用域（M26）：这些工具会改库或把注意力引向其它论文，
 # 是 M25 漂移事故的直接肇因——锚定任务下从工具面移除并拒绝执行。
 ANCHOR_DENIED_TOOLS = frozenset({"search_papers", "add_papers", "explore_directions"})
-_MAX_EVIDENCE_CHARS = 280  # 对比证据单块截断长度
+_MAX_EVIDENCE_CHARS = 3200  # 保留完整知识块；280 字会截掉正文里的数据集与指标
 _DEFAULT_COMPARE = 4  # 未指定论文时的默认对比篇数
+
+
+def _evidence_excerpt(text: str, budget: int) -> str:
+    lo, hi = 0, min(len(text), _MAX_EVIDENCE_CHARS)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(json.dumps(text[:mid], ensure_ascii=False)) <= budget:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo]
 
 
 def parse_pick_spec(spec: str, total: int) -> list[int]:
@@ -302,15 +314,40 @@ class ToolExecutor:
         missing: list[str] = []
         for sid in ids[:6]:  # 单次对比上限 6 篇（上下文保护）
             rec = self._lib.get(sid)
+            if rec is None and ":" not in sid:
+                # 模型常把 openalex:W... 简写成 W...；只接受完整后缀的唯一匹配。
+                matches = [pid for pid in self._lib.find(sid) if pid.split(":", 1)[-1] == sid]
+                if len(matches) > 1:
+                    raise ValueError(f"论文 ID {sid} 匹配多篇，请使用完整 source_id：{', '.join(matches)}")
+                if len(matches) == 1:
+                    sid = matches[0]
+                    rec = self._lib.get(sid)
             if rec is None:
                 missing.append(sid)
                 continue
             hits = self._retriever.retrieve(topic, k=k, paper_id=sid)
+            structured = {}
+            experiment_path = paths.knowledge_dir(self._cfg) / safe_dirname(sid) / "experiment.json"
+            if experiment_path.exists():
+                try:
+                    experiment = json.loads(experiment_path.read_text(encoding="utf-8"))
+                    structured = {key: experiment.get(key) for key in ("research_goal", "datasets", "metrics")}
+                except (ValueError, OSError, AttributeError):
+                    pass
             papers_out.append({
                 "paper_id": sid,
                 "title": rec.paper.title[:80],
+                "extracted_facts": structured if len(json.dumps(structured, ensure_ascii=False)) <= 2000 else {},
+                "field_evidence": load_bound_fields(
+                    sid, self._cfg,
+                    self._retriever.store.all_hits(paper_id=sid)
+                    if callable(getattr(self._retriever.store, "all_hits", None)) else hits,
+                    max_chars=6000,
+                ),
                 "evidence": [
-                    {"section": h.section, "page": h.page, "text": h.text[:_MAX_EVIDENCE_CHARS]}
+                    {"section": h.section, "page": h.page,
+                     "text": _evidence_excerpt(h.text, 32_000 // (max(1, len(ids[:6])) * k)),
+                     "chunk_id": getattr(h, "chunk_id", "")}
                     for h in hits
                 ],
             })
@@ -318,7 +355,7 @@ class ToolExecutor:
             "topic": topic,
             "papers": papers_out,
             "missing": missing,
-            "hint": "基于以上分组证据综合对比：方法/数据/指标的异同，并标注出处论文",
+            "hint": "逐字段查看 field_evidence：引用有效不等于事实得到支持；unverified 是待核对候选，unknown/missing 不可补写，unsupported/conflict 不可当作确定事实。extracted_facts 仅为辅助产物。只依据原文综合对比，逐项标注来源；任务、数据划分、指标定义或单位未核对时，禁止按裸值排序论文优劣。",
         }
 
     # ------------------------------------------------------------------

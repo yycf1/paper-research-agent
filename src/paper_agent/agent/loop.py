@@ -45,7 +45,7 @@ SYSTEM_PROMPT = """你是 paper-agent，一个论文研究 Agent。通过调用�
   year_from/sort/oa_only 等条件），看到候选后再用 add_papers 挑选入库；
 - 已入库论文的内容问题：用 ask_library（它会检索并带出处回答）；
 - 多篇论文对比：先用 compare_papers 按对比主题收集各论文的证据块，
-  再综合成对比结论并标注出处论文——不要凭记忆对比；
+  再综合成对比结论，逐项标注论文完整 ID、章节与可用页码。field_evidence 中引用有效仅证明片段归属，unverified 仍需核对，unknown 不可补写，unsupported/conflict 不可当作确定事实；任务、数据划分、指标定义或单位未核对时，不得按裸值排名。证据没写的内容明确标为证据不足，禁止根据常识或论文标题推测。多个对比维度可分别检索；
 - 复现/原型验证任务：read_repro_plan 理解方案 → write_code 写最小可运行
   原型（依赖仅限标准库与 numpy，用合成数据，不联网）→ run_code 执行；
   exit_code 非 0 或超时就按 stderr 修代码重跑（最多 3 次），成功后汇报
@@ -71,6 +71,7 @@ class AgentStep:
     status: str = ""
     detail: str = ""
     duration_ms: int = 0
+    comparison: dict | None = None
 
 
 @dataclass
@@ -348,6 +349,12 @@ def run_agent_task(
                     + (result.error or _summarize_result(result.data if isinstance(result.data, dict) else {}))
                 ),
                 duration_ms=duration_ms,
+                comparison=(
+                    {"papers": [{"paper_id": p["paper_id"], "title": p["title"],
+                                 "field_evidence": p["field_evidence"]} for p in result.data.get("papers", [])
+                                if "field_evidence" in p]}
+                    if tc.name == "compare_papers" and result.ok and isinstance(result.data, dict) else None
+                ),
             )
             if nth == _RepeatGuard.WARN_AT:
                 step.detail = f"（第 {nth} 次完全相同的调用）{step.detail}"
@@ -364,7 +371,9 @@ def run_agent_task(
                 )
             elif tool_nth >= _RepeatGuard.WARN_TOOL_AT:
                 payload["warning"] = guard.tool_warning(tc.name, tool_nth)
-            messages.append(tool_message(tc.id, payload))
+            # 对比包含多篇论文，统一 4k 头部截断会丢掉第二篇及其后的整篇证据。
+            # 执行器已限制篇数/块数/块长；对比结果使用独立的有界预算。
+            messages.append(tool_message(tc.id, payload, max_chars=100_000 if tc.name == "compare_papers" else 4000))
             tool_spans.append(len(messages) - 1)
         step_spans.append(tool_spans)
         stubbed_steps = _compact_context(messages, step_spans, keep_steps, stubbed_steps)

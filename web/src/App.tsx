@@ -67,7 +67,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo">📄</span> paper-agent
+          <span className="logo">📄</span> 个人文献库智能体
           <span className="ver">{summary ? `v${summary.version}` : ""}</span>
         </div>
         <nav className="tabs">

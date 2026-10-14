@@ -1,6 +1,8 @@
 # 运行时数据与密钥
 data/
 .env
+.env.*
+!.env.example
 
 # Python
 __pycache__/
@@ -16,3 +18,12 @@ samples/
 
 # 本地运行日志
 server*.log
+
+# 个人求职材料、临时验证文件与工具缓存
+/resume/
+/tmp/
+/compile.pdf
+/.zcodeignore
+/.ruff_cache/
+/.codex/
+/.agents/

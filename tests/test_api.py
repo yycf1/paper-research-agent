@@ -191,6 +191,7 @@ def test_ask_endpoint(monkeypatch, tmp_path):
         def __init__(self, pid, section):
             self.paper_id, self.section, self.title, self.page = pid, section, "T", 3
             self.text, self.distance = "chunk", 0.1
+            self.chunk_id = ""
 
     def fake_answer(question, *, retriever, k=8, paper_id=None, **kw):
         return "答案 [1]", [_Hit("openalex:W1", "methods"), _Hit("openalex:W1", "methods")]

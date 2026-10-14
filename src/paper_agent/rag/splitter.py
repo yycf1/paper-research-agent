@@ -111,6 +111,10 @@ def _parse_sections(markdown: str) -> list[tuple[str, int, str]]:
     for line in markdown.splitlines():
         m = _PAGE_RE.match(line)
         if m:
+            # 每页独立分块，避免将整节末页误记为所有块的来源页。
+            if "".join(buf).strip():
+                sections.append((name, page, "".join(buf)))
+                buf = []
             page = int(m.group(1))
             continue
         h = _SECTION_RE.match(line)
@@ -163,10 +167,27 @@ def _split_long_paragraph(para: str, max_tokens: int, overlap_tokens: int) -> li
     cur_tokens = 0
     for sent in sentences:
         sent_tokens = estimate_tokens(sent)
+        if sent_tokens > max_tokens:
+            if cur.strip():
+                pieces.append(cur.strip())
+                cur, cur_tokens = "", 0
+            while sent:
+                lo, hi = 1, len(sent)
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if estimate_tokens(sent[:mid]) <= max_tokens:
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                pieces.append(sent[:lo].strip())
+                sent = sent[lo:]
+            continue
         if cur and cur_tokens + sent_tokens > max_tokens:
             pieces.append(cur.strip())
             cur, cur_tokens = _tail_text(cur, overlap_tokens), 0
             cur_tokens = estimate_tokens(cur)
+            if cur_tokens + sent_tokens > max_tokens:
+                cur, cur_tokens = "", 0
         cur += ("" if cur.endswith((" ", "\n")) else " ") + sent
         cur_tokens += sent_tokens
     if cur.strip():

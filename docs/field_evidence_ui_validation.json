@@ -1,0 +1,43 @@
+{
+  "errors": [],
+  "results": [
+    {
+      "name": "desktop",
+      "kind": "real_local_api",
+      "viewport": 1440,
+      "overflow": false,
+      "facts": 4,
+      "quotes": 6
+    },
+    {
+      "name": "desktop",
+      "kind": "offline_comparison_ui_fixture",
+      "viewport": 1440,
+      "table": {
+        "width": 812,
+        "content": 812
+      },
+      "overflow": false,
+      "facts": 15
+    },
+    {
+      "name": "mobile",
+      "kind": "real_local_api",
+      "viewport": 390,
+      "overflow": false,
+      "facts": 4,
+      "quotes": 6
+    },
+    {
+      "name": "mobile",
+      "kind": "offline_comparison_ui_fixture",
+      "viewport": 390,
+      "table": {
+        "width": 344,
+        "content": 808
+      },
+      "overflow": false,
+      "facts": 15
+    }
+  ]
+}

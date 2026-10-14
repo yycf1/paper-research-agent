@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { api, pollJob, type AskReply, type ExperimentSchema, type Job, type PaperDetail, type ReproView } from "../api";
 import Markdown from "../md";
+import Evidence from "./Evidence";
+import { PaperFacts } from "./FieldEvidence";
 import { statusLabel } from "../labels";
 
-type Tab = "report" | "experiment" | "plan" | "fulltext" | "abstract";
+type Tab = "report" | "experiment" | "facts" | "plan" | "fulltext" | "abstract";
 
 /** 一键处理的 5 个阶段（与后端 process.py 的 STAGE_LABELS 对应，顺序即执行序）。 */
 const CANON_STAGES = [
@@ -121,6 +123,7 @@ export default function PaperDetail({
   const tabs = ([
     { k: "report", label: "精读报告", show: !!paper.report?.trim() },
     { k: "experiment", label: "实验结构", show: !!exp },
+    { k: "facts", label: "字段依据", show: true },
     { k: "plan", label: "复现", show: hasReproArtifacts },
     { k: "fulltext", label: "全文", show: !!paper.full_text },
     { k: "abstract", label: "摘要", show: !!paper.abstract },
@@ -297,6 +300,7 @@ export default function PaperDetail({
             <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>
           )}
           {active === "experiment" && exp && <ExperimentView exp={exp} />}
+          {active === "facts" && <PaperFacts key={id} id={id} title={paper.title} />}
         </>
       )}
 
@@ -322,7 +326,7 @@ export default function PaperDetail({
               {askOut.sources.length > 0 && (
                 <div className="ask-src">
                   {askOut.sources.map((s, i) => (
-                    <span key={i} className="hint">出处 [{s.n.join(",")}] 第 {s.page} 页 · {s.section}</span>
+                    <div key={i}><span className="hint">出处 [{s.n.join(",")}] {s.page ? `第 ${s.page} 页 · ` : ""}{s.section}</span><Evidence source={s} /></div>
                   ))}
                 </div>
               )}

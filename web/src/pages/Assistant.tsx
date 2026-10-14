@@ -9,6 +9,8 @@ import {
   type AgentStepView,
 } from "../api";
 import Markdown from "../md";
+import Evidence from "../components/Evidence";
+import FieldEvidence from "../components/FieldEvidence";
 
 interface Turn {
   role: "user" | "bot";
@@ -418,10 +420,10 @@ export default function Assistant({
                   {t.sources && t.sources.length > 0 && (
                     <div className="sources">
                       {t.sources.map((s, j) => (
-                        <div key={j} className="src" onClick={() => onOpenDetail(s.paper_id)}>
+                        <div key={j}><div className="src" onClick={() => onOpenDetail(s.paper_id)}>
                           [{(s.n ?? [j + 1]).join("][")}] {s.title.slice(0, 50)}{s.title.length > 50 ? "…" : ""} · {s.section}
                           {s.page ? ` · 第${s.page}页` : ""}
-                        </div>
+                        </div><Evidence source={s} /></div>
                       ))}
                     </div>
                   )}
@@ -482,6 +484,7 @@ export default function Assistant({
                     <span className={`s-badge s-${s.status}`}>{STATUS_TEXT[s.status] ?? s.status}</span>
                     <span className="s-ms">{s.duration_ms} ms</span>
                     {s.detail && <div className="s-detail">{s.detail}</div>}
+                    {s.comparison?.papers?.length ? <FieldEvidence papers={s.comparison.papers} /> : null}
                   </div>
                 ))}
                 {agentBusy && (

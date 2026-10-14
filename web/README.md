@@ -1,32 +1,35 @@
-# React + TypeScript + Vite
+# Paper Research Agent Web
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+个人文献库智能体的 React + TypeScript 前端。包含文献库、论文详情、对话、Agent 任务、字段证据表和本地模型设置。
 
-Currently, two official plugins are available:
+## 本地开发
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+要求 Node.js 20.19+ 或 22.12+。先在项目根目录运行 `uv run pa serve`，然后：
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+cd web
+npm ci
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Vite 默认监听 5173，`/api` 代理到 `http://127.0.0.1:8000`，可在 `vite.config.ts` 修改。
+
+```bash
+npm run build
+npm run lint
+```
+
+构建结果写入 `web/dist/`，由 FastAPI 同端口托管。仓库保留构建产物；发布前端改动时同步构建。既有 React lint 警告在[验证记录](../docs/validation.md)中说明。
+
+## 代码入口
+
+| 路径 | 职责 |
+| --- | --- |
+| `src/App.tsx` | 页面切换、深链和全局状态 |
+| `src/pages/Library.tsx` | 检索预览、筛选与文献管理 |
+| `src/components/PaperDetail.tsx` | 文献处理、报告、字段依据与复现产物 |
+| `src/pages/Assistant.tsx` | 会话、Agent 任务、SSE 与轮询回退 |
+| `src/components/FieldEvidence.tsx` | 三字段比较、待核对状态与原文展开 |
+| `src/api.ts` | 后端类型与请求封装 |
+
+自动匹配到的原文是候选依据，页面中的“待核对”不代表事实得到支持。更多说明见[项目首页](../README.md)。

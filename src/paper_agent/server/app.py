@@ -11,9 +11,9 @@ from paper_agent.config import PROJECT_ROOT
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="paper-agent API",
+        title="个人文献库智能体 API",
         version=__version__,
-        description="文献阅读复现 Agent 的 Web 服务层",
+        description="个人文献库智能体：多源检索、文献入库、可溯源问答与跨论文对比",
     )
 
     from paper_agent.server import routes

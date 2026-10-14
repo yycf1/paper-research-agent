@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "scope": "original_synthetic_offline_demonstration_not_quality_benchmark",
+  "corpus_sha256": "23594b6df13b2f3c5dc9ab81d092daba1a81831929ffedf35153e96f4267b2ce",
+  "cases": [
+    {
+      "id": "alpha-dataset",
+      "kind": "synthetic_demo",
+      "question": "Which dataset DATA-ALPHA is used in Synthetic study Alpha?",
+      "annotation_status": "text_checked",
+      "annotation_by": "assistant",
+      "annotation_basis": "original_synthetic_fixture_not_real_paper_or_human_review",
+      "should_answer": true,
+      "expected_facts": [
+        "DATA-ALPHA"
+      ],
+      "evidence_groups": [
+        [
+          {
+            "paper_id": "synthetic:alpha",
+            "chunk_id": "synthetic:alpha::0",
+            "text_sha256": "358cb1bbb313f5078268785234ed3e5897aa4978c922cd59bf21327c99cf3b91",
+            "quote": "Synthetic study Alpha investigates image segmentation using DATA-ALPHA."
+          }
+        ]
+      ]
+    },
+    {
+      "id": "alpha-dice",
+      "kind": "synthetic_demo",
+      "question": "What Dice value does Synthetic study Alpha report?",
+      "annotation_status": "text_checked",
+      "annotation_by": "assistant",
+      "annotation_basis": "original_synthetic_fixture_not_real_paper_or_human_review",
+      "should_answer": true,
+      "expected_facts": [
+        "0.91"
+      ],
+      "evidence_groups": [
+        [
+          {
+            "paper_id": "synthetic:alpha",
+            "chunk_id": "synthetic:alpha::1",
+            "text_sha256": "1f64a73dd97848758cb89d7c85063b59ec2452dd91691bc89130ad380af73afa",
+            "quote": "Synthetic study Alpha reports Dice 0.91 on DATA-ALPHA test split. Accuracy 0.99 is a different metric."
+          }
+        ]
+      ]
+    },
+    {
+      "id": "cross-study-dice",
+      "kind": "synthetic_demo",
+      "question": "Synthetic study Alpha Beta Dice evaluation split",
+      "annotation_status": "text_checked",
+      "annotation_by": "assistant",
+      "annotation_basis": "original_synthetic_fixture_not_real_paper_or_human_review",
+      "should_answer": true,
+      "expected_facts": [
+        "test",
+        "validation"
+      ],
+      "evidence_groups": [
+        [
+          {
+            "paper_id": "synthetic:alpha",
+            "chunk_id": "synthetic:alpha::1",
+            "text_sha256": "1f64a73dd97848758cb89d7c85063b59ec2452dd91691bc89130ad380af73afa",
+            "quote": "Synthetic study Alpha reports Dice 0.91 on DATA-ALPHA test split. Accuracy 0.99 is a different metric."
+          }
+        ],
+        [
+          {
+            "paper_id": "synthetic:beta",
+            "chunk_id": "synthetic:beta::0",
+            "text_sha256": "ae78b35f71c42e44ec2f96f3d2829c195b86c1541cecedc29ee67a0c29d6fd7e",
+            "quote": "Synthetic study Beta reports Dice 0.88 on DATA-BETA validation split. Its evaluation split differs from Alpha."
+          }
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "checked_at": "2026-10-14T07:18:02.207625+00:00",
+  "user_facing_date": "2026-10-14",
+  "scope": "Fresh locked installation in isolated publication checkout; no personal library or live model calls",
+  "python": {
+    "version": "3.13.2",
+    "command": "uv sync --locked --dev && uv run pytest -q",
+    "tests": 290,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "elapsed_seconds": 137.39,
+    "warnings": 1,
+    "warning_note": "Existing Starlette/anyio deprecation"
+  },
+  "frontend": {
+    "install": "npm ci",
+    "build": "passed",
+    "lint_exit_code": 0,
+    "existing_react_warnings": 4,
+    "bundled_assets": [
+      "index-DtxQFTh4.js",
+      "index-ZG6j_No2.css"
+    ]
+  },
+  "smoke": {
+    "cli_help": "passed",
+    "api_health": "passed",
+    "bundled_frontend": "passed"
+  },
+  "offline_example": {
+    "original_synthetic_passages": 3,
+    "cases_run": 3,
+    "matches_dataset_corpus": true,
+    "generated_answers": 0,
+    "reviewed_answers": 0,
+    "model_calls": 0,
+    "not_a_quality_benchmark": true
+  },
+  "github_ci": "Separate Linux matrix results are available in repository Actions; local tests do not imply hosted CI success"
+}
