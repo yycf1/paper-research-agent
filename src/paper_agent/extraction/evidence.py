@@ -111,7 +111,7 @@ def _normalized(field, raw):
     keys = (
         ("name", "source", "split")
         if field == "datasets"
-        else ("name", "value", "baseline", "task", "dataset", "split", "unit")
+        else ("name", "value", "baseline", "task", "dataset", "split", "unit", "definition", "model", "evaluation_protocol")
     )
     out = {}
     for key in keys:

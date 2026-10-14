@@ -42,7 +42,7 @@ _PROMPT = """你是论文实验流程结构化助手。只依据我提供的论�
   "datasets": [{{"name": "数据集名", "source": "来源/获取方式", "split": "划分方式（未说明则留空）"}}],
   "hyperparameters": {{"参数名": "取值（文中未说明的不要写）"}},
   "experiment_steps": [{{"step": 1, "description": "步骤概述", "details": "关键细节"}}],
-  "metrics": [{{"name": "指标名", "value": "论文报告值", "baseline": "对比基线及取值（未说明则留空）"}}],
+  "metrics": [{{"name": "完整指标名（保留 @K 等参数）", "value": "论文报告值", "baseline": "对比基线及取值（未说明则留空）", "model": "该数值所属模型", "task": "实验任务", "dataset": "该数值对应数据集", "split": "训练/验证/测试划分", "definition": "指标定义与参数", "unit": "数值单位/比例或百分比", "evaluation_protocol": "评估协议与设置"}}],
   "main_results": "主要结果描述",
   "conclusions": "主要结论",
   "repro_assets": {{"code_url": ["官方或第三方代码仓库"], "dataset_urls": ["数据集下载地址"], "project_page": ["项目主页"]}},
@@ -54,6 +54,7 @@ _PROMPT = """你是论文实验流程结构化助手。只依据我提供的论�
 1. 文中未明确说明的信息一律不填，并在 "unverified_claims" 数组里列出你为补全结构所做的推断（没有推断则给空数组）；
 2. 链接必须来自原文，不要自己构造；
 3. confidence 里未提及的字段可不写。
+4. 每项指标的实验条件必须有原文依据；不得把不同表格、数据集或模型的条件拼到一起。没有对应关系就留空。
 
 论文文本（可能被截断）：
 ---

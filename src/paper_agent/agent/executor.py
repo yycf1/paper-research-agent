@@ -33,6 +33,7 @@ from paper_agent.library import Library
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.rag.scope import check_hits
 from paper_agent.services.assistant import suggest_directions
+from paper_agent.services.comparison import comparison_report
 from paper_agent.services.facts import load_bound_fields
 from paper_agent.services.search import Candidate, ingest_papers, search_sources
 from paper_agent.tools import TOOL_REGISTRY, ToolResult, run_tool
@@ -375,6 +376,7 @@ class ToolExecutor:
             "topic": topic,
             "papers": papers_out,
             "missing": missing,
+            "comparability": comparison_report(papers_out),
             "hint": "逐字段查看 field_evidence：引用有效不等于事实得到支持；unverified 是待核对候选，unknown/missing 不可补写，unsupported/conflict 不可当作确定事实。extracted_facts 仅为辅助产物。只依据原文综合对比，逐项标注来源；任务、数据划分、指标定义或单位未核对时，禁止按裸值排序论文优劣。",
         }
 

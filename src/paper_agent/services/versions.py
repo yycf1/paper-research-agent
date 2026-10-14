@@ -10,7 +10,7 @@ from pathlib import Path
 
 from paper_agent.rag import splitter
 
-EXPERIMENT_CONTRACT = "experiment-v2-segments"
+EXPERIMENT_CONTRACT = "experiment-v3-metric-conditions"
 REPORT_CONTRACT = "report-v2-segments"
 
 

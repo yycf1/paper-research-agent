@@ -539,6 +539,31 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
 
 
+class CompareRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=500)
+    paper_ids: list[str] = Field(min_length=2, max_length=6)
+    k_per_paper: int = Field(3, ge=1, le=5)
+
+
+@router.post("/compare")
+def api_compare(req: CompareRequest, lib: Library = Depends(open_lib)) -> dict:
+    from paper_agent.agent.executor import ToolExecutor
+    from paper_agent.agent.scope import PaperScope
+
+    try:
+        scope = PaperScope(lib, allowed_paper_ids=req.paper_ids)
+        if len(scope.allowed) < 2:
+            raise ValueError("比较需要至少两篇不同论文")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    executor = ToolExecutor(lib=lib, retriever=_retriever(), cfg=load_config(),
+                            allowed_paper_ids=list(scope.allowed))
+    result = executor.execute("compare_papers", req.model_dump_json())
+    if not result.ok:
+        raise HTTPException(400 if result.status == "fatal" else 503, result.error)
+    return result.data
+
+
 @router.post("/chat")
 def api_chat(req: ChatRequest, lib: Library = Depends(open_lib)) -> dict:
     cfg = load_config()

@@ -304,6 +304,7 @@ def test_compare_payload_remains_bounded_and_all_papers_have_field_records(tmp_p
 def test_comparison_evidence_survives_model_context_events_and_trace(tmp_path):
     fields = build_bound_fields("p1", {"datasets": [{"name": "ORIGA"}]}, [hit()])
     expected = {
+        "comparability": {"ranking_allowed": False, "pairs": []},
         "papers": [{"paper_id": "p1", "title": "Paper", "field_evidence": fields}]
     }
 

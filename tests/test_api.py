@@ -224,6 +224,28 @@ def test_ask_multiple_papers_and_answer_metadata(monkeypatch, tmp_path):
     assert client.post("/api/ask", json={"question": "q", "paper_id": "W1", "paper_ids": ["W2"]}).status_code == 400
 
 
+def test_direct_comparison_uses_selected_papers_without_answer_model(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from paper_agent.rag.vectorstore import Hit
+
+    _seed(tmp_path).close()
+    client = _client(monkeypatch, tmp_path)
+    seen = []
+
+    def retrieve(query, *, k, paper_id):
+        seen.append(paper_id)
+        return [Hit(paper_id, "T", "Method", 1, "graph evidence", 0.1, chunk_id=paper_id + "::0")]
+
+    monkeypatch.setattr(rt, "_retriever", lambda: SimpleNamespace(store=SimpleNamespace(count=lambda: 2), retrieve=retrieve))
+    response = client.post("/api/compare", json={"topic": "metrics", "paper_ids": ["W1", "W2"]})
+    assert response.status_code == 200
+    assert seen == ["openalex:W1", "openalex:W2"]
+    assert response.json()["comparability"]["ranking_allowed"] is False
+    assert client.post("/api/compare", json={"topic": "q", "paper_ids": ["W1", "W1"]}).status_code == 400
+    assert client.post("/api/compare", json={"topic": "q", "paper_ids": ["W1", "missing"]}).status_code == 400
+
+
 def test_chat_endpoint(monkeypatch, tmp_path):
     lib = _seed(tmp_path)
     lib.close()

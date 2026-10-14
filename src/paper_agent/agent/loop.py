@@ -364,7 +364,8 @@ def run_agent_task(
                 ),
                 duration_ms=duration_ms,
                 comparison=(
-                    {"papers": [{"paper_id": p["paper_id"], "title": p["title"],
+                    {**({"comparability": result.data["comparability"]} if "comparability" in result.data else {}),
+                     "papers": [{"paper_id": p["paper_id"], "title": p["title"],
                                  "field_evidence": p["field_evidence"]} for p in result.data.get("papers", [])
                                 if "field_evidence" in p]}
                     if tc.name == "compare_papers" and result.ok and isinstance(result.data, dict) else None
