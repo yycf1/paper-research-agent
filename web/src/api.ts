@@ -9,6 +9,8 @@ export interface Paper {
   doi: string | null;
   citations: number | null;
   has_pdf: boolean;
+  /** 已保存的本地 PDF/DOCX；has_pdf 仅表示来源提供下载链接。 */
+  has_local_file?: boolean;
   landing_page: string | null;
   abstract_only?: boolean;
   status: string;

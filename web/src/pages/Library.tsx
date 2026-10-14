@@ -1,8 +1,14 @@
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Paper, type SearchReply, type StatusSummary, type TagsReply } from "../api";
+import {
+  api,
+  type Paper,
+  type SearchReply,
+  type StatusSummary,
+  type TagsReply,
+} from "../api";
 import PaperDetail from "../components/PaperDetail";
-import { STATUS_ORDER, statusLabel } from "../labels";
+import { STATUS_ORDER, STATUS_HELP, statusLabel } from "../labels";
 
 const PAGE_SIZE = 200; // 后端单页上限；超出部分用「加载更多」追加
 const SOURCE_LABELS: Record<string, string> = {
@@ -14,8 +20,16 @@ const SOURCE_LABELS: Record<string, string> = {
 type FieldScope = "all" | "title" | "abstract";
 type SortKey = "relevance" | "citations" | "newest";
 
-const FIELD_LABELS: Record<FieldScope, string> = { all: "全部字段", title: "仅标题", abstract: "仅摘要" };
-const SORT_LABELS: Record<SortKey, string> = { relevance: "相关度", citations: "引用数", newest: "最新发表" };
+const FIELD_LABELS: Record<FieldScope, string> = {
+  all: "全部字段",
+  title: "仅标题",
+  abstract: "仅摘要",
+};
+const SORT_LABELS: Record<SortKey, string> = {
+  relevance: "相关度",
+  citations: "引用数",
+  newest: "最新发表",
+};
 
 const ERR_LABELS: Record<string, string> = {
   "403": "源站拒绝访问",
@@ -96,9 +110,18 @@ export default function Library({
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [bulkTarget, setBulkTarget] = useState("");
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [deleteTargets, setDeleteTargets] = useState<
+    { id: string; title: string }[] | null
+  >(null);
+  const [deleteProgress, setDeleteProgress] = useState(0);
+  const knownTitles = useRef(new Map<string, string>());
 
   const loadTags = useCallback(
-    () => api.tags().then(setTagInfo).catch(() => {}),
+    () =>
+      api
+        .tags()
+        .then(setTagInfo)
+        .catch(() => {}),
     [],
   );
 
@@ -113,6 +136,7 @@ export default function Library({
         q: q || undefined,
         limit: PAGE_SIZE,
       });
+      data.papers.forEach((p) => knownTitles.current.set(p.source_id, p.title));
       setPapers(data.papers);
       setTotal(data.total);
     } catch (e) {
@@ -122,7 +146,10 @@ export default function Library({
     }
   }, [status, tag, untaggedOnly, q]);
 
-  useEffect(() => { void load(); void loadTags(); }, [load, loadTags, summary]);
+  useEffect(() => {
+    void load();
+    void loadTags();
+  }, [load, loadTags, summary]);
 
   // 库内筛选防抖：每个按键一次请求在 200 条 ×  SQLite 上是浪费
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,6 +172,7 @@ export default function Library({
         limit: PAGE_SIZE,
         offset: papers.length,
       });
+      data.papers.forEach((p) => knownTitles.current.set(p.source_id, p.title));
       setPapers((cur) => [...cur, ...data.papers]);
     } catch (e) {
       setErr(String(e));
@@ -152,7 +180,9 @@ export default function Library({
   };
 
   const toggleSource = (s: string) =>
-    setSources((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+    setSources((cur) =>
+      cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s],
+    );
 
   const doSearch = async () => {
     if (!searchQuery.trim() || sources.length === 0) return;
@@ -171,7 +201,11 @@ export default function Library({
         oa_only: oaOnly,
       });
       setPreview(out);
-      setSelected(new Set(out.candidates.filter((c) => !c.duplicate_of).map((c) => c.source_id)));
+      setSelected(
+        new Set(
+          out.candidates.filter((c) => !c.duplicate_of).map((c) => c.source_id),
+        ),
+      );
       setIngestTag(searchQuery.trim());
       setNotes(out.notes);
     } catch (e) {
@@ -194,10 +228,14 @@ export default function Library({
     setIngesting(true);
     setErr("");
     try {
-      const chosen = preview.candidates.filter((c) => selected.has(c.source_id));
+      const chosen = preview.candidates.filter((c) =>
+        selected.has(c.source_id),
+      );
       const out = await api.ingest(chosen, ingestTag.trim());
       setPreview(null);
-      setNotes([`已入库 ${out.ingested} 篇（${out.duplicates} 篇与库内已有重复，仅合并信息）。`]);
+      setNotes([
+        `已新增 ${out.ingested} 条文献信息，尚未下载全文；${out.duplicates} 条与库内记录重复，仅合并信息。`,
+      ]);
       // 总是刷新列表：目标分组与当前过滤相同时 setTag 不触发重渲染
       if (ingestTag.trim() && tag !== ingestTag.trim()) {
         setUntaggedOnly(false);
@@ -219,7 +257,11 @@ export default function Library({
     setErr("");
     try {
       const out = await api.upload(file);
-      setNotes([out.is_new ? `已上传：${out.paper.title}（可直接「一键处理」）` : `该文件已存在（幂等跳过）：${out.paper.title}`]);
+      setNotes([
+        out.is_new
+          ? `已上传：${out.paper.title}（可直接「一键处理」）`
+          : `该文件已存在（幂等跳过）：${out.paper.title}`,
+      ]);
       setTag("");
       setUntaggedOnly(false);
       await load();
@@ -265,7 +307,12 @@ export default function Library({
   };
 
   const doDeleteGroup = async (name: string, count: number) => {
-    if (!window.confirm(`删除分组「${name}」？\n组内 ${count} 篇论文将回到未分组（论文本身不删）。`)) return;
+    if (
+      !window.confirm(
+        `删除分组「${name}」？\n组内 ${count} 篇论文将回到未分组（论文本身不删）。`,
+      )
+    )
+      return;
     setErr("");
     try {
       await api.deleteTag(name);
@@ -287,7 +334,8 @@ export default function Library({
       return next;
     });
 
-  const allVisibleChecked = papers.length > 0 && papers.every((p) => checked.has(p.source_id));
+  const allVisibleChecked =
+    papers.length > 0 && papers.every((p) => checked.has(p.source_id));
 
   const toggleAllVisible = () =>
     setChecked((cur) => {
@@ -348,227 +396,459 @@ export default function Library({
     }
   };
 
-  const freshCount = preview?.candidates.filter((c) => !c.duplicate_of).length ?? 0;
+  const deleteSelected = async () => {
+    if (!deleteTargets || bulkBusy) return;
+    const targets = [...deleteTargets];
+    setBulkBusy(true);
+    setDeleteProgress(0);
+    setErr("");
+    const failed = new Set<string>();
+    const errors: string[] = [];
+    for (const [index, target] of targets.entries()) {
+      try {
+        const result = await api.deletePaper(target.id);
+        if (!result.ok) throw new Error("服务未确认删除成功");
+      } catch (e) {
+        failed.add(target.id);
+        errors.push(`${target.title}：${e}`);
+      }
+      setDeleteProgress(index + 1);
+    }
+    setChecked(failed);
+    setDeleteTargets(null);
+    setBulkBusy(false);
+    setNotes([
+      `已删除 ${targets.length - failed.size} 篇${failed.size ? `；${failed.size} 篇未删除，已保留勾选，可重试。` : "。"}`,
+    ]);
+    await load();
+    if (errors.length) setNotes((current) => [...current, ...errors]);
+    void loadTags();
+    onChanged();
+  };
+
+  const freshCount =
+    preview?.candidates.filter((c) => !c.duplicate_of).length ?? 0;
   const groups = tagInfo?.tags ?? [];
-  const groupPanel = (<div className="lib-groups" onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && (e.target as HTMLElement).tagName === "SPAN") { e.preventDefault(); (e.target as HTMLElement).click(); } }}>
-          <span className="hint row-label">分组</span>
-          <div className="chips">
+  const groupPanel = (
+    <div
+      className="lib-groups"
+      onKeyDown={(e) => {
+        if (
+          (e.key === "Enter" || e.key === " ") &&
+          (e.target as HTMLElement).tagName === "SPAN"
+        ) {
+          e.preventDefault();
+          (e.target as HTMLElement).click();
+        }
+      }}
+    >
+      <span className="hint row-label">分组</span>
+      <div className="chips">
+        <span
+          role="button"
+          tabIndex={0}
+          className={`chip ${tag === "" && !untaggedOnly ? "on" : ""}`}
+          onClick={() => {
+            setTag("");
+            setUntaggedOnly(false);
+          }}
+        >
+          不限
+        </span>
+        {groups.slice(0, 12).map((g) => (
+          <span
+            key={g.name}
+            role="button"
+            tabIndex={0}
+            className={`chip ${tag === g.name && !untaggedOnly ? "on" : ""}`}
+            onClick={() => {
+              setUntaggedOnly(false);
+              setTag(g.name);
+            }}
+            title={g.name}
+          >
+            {g.name.length > 18 ? g.name.slice(0, 18) + "…" : g.name} {g.count}
             <span
-              role="button" tabIndex={0}
-              className={`chip ${tag === "" && !untaggedOnly ? "on" : ""}`}
-              onClick={() => {
-                setTag("");
-                setUntaggedOnly(false);
+              className="grp-act"
+              title="重命名"
+              onClick={(e) => {
+                e.stopPropagation();
+                doRenameGroup(g.name);
               }}
             >
-              不限
+              ✎
             </span>
-            {groups.slice(0, 12).map((g) => (
-              <span
-                key={g.name}
-                role="button" tabIndex={0}
-                className={`chip ${tag === g.name && !untaggedOnly ? "on" : ""}`}
-                onClick={() => {
-                  setUntaggedOnly(false);
-                  setTag(g.name);
-                }}
-                title={g.name}
-              >
-                {g.name.length > 18 ? g.name.slice(0, 18) + "…" : g.name} {g.count}
-                <span
-                  className="grp-act"
-                  title="重命名"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    doRenameGroup(g.name);
-                  }}
-                >
-                  ✎
-                </span>
-                <span
-                  className="grp-act"
-                  title="删除分组（论文回未分组）"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    doDeleteGroup(g.name, g.count);
-                  }}
-                >
-                  ✕
-                </span>
-              </span>
-            ))}
-            {(tagInfo?.untagged ?? 0) > 0 && (
-              <span
-                className={`chip ${untaggedOnly ? "on" : ""}`}
-                role="button" tabIndex={0}
-                onClick={() => {
-                  setTag("");
-                  setUntaggedOnly(true);
-                }}
-                title="检索全量入库等来源不明的论文"
-              >
-                未分组 {tagInfo!.untagged}
-              </span>
-            )}
-            {creatingGroup ? (
-              <span className="chip" onClick={(e) => e.stopPropagation()}>
-                <input
-                  autoFocus
-                  type="text"
-                  placeholder="分组名"
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") doCreateGroup();
-                    if (e.key === "Escape") setCreatingGroup(false);
-                  }}
-                  style={{ width: 110, border: "none", background: "transparent", outline: "none" }}
-                />
-                <span className="grp-act" title="确定" onClick={doCreateGroup}>✓</span>
-                <span className="grp-act" title="取消" onClick={() => setCreatingGroup(false)}>✕</span>
-              </span>
-            ) : (
-              <span className="chip chip-new" role="button" tabIndex={0} style={{ cursor: "pointer" }} onClick={() => setCreatingGroup(true)}>
-                ＋ 新建分组
-              </span>
-            )}
-          </div>
-        </div>);
+            <span
+              className="grp-act"
+              title="删除分组（论文回未分组）"
+              onClick={(e) => {
+                e.stopPropagation();
+                doDeleteGroup(g.name, g.count);
+              }}
+            >
+              ✕
+            </span>
+          </span>
+        ))}
+        {(tagInfo?.untagged ?? 0) > 0 && (
+          <span
+            className={`chip ${untaggedOnly ? "on" : ""}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => {
+              setTag("");
+              setUntaggedOnly(true);
+            }}
+            title="检索全量入库等来源不明的论文"
+          >
+            未分组 {tagInfo!.untagged}
+          </span>
+        )}
+        {creatingGroup ? (
+          <span className="chip" onClick={(e) => e.stopPropagation()}>
+            <input
+              autoFocus
+              type="text"
+              placeholder="分组名"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") doCreateGroup();
+                if (e.key === "Escape") setCreatingGroup(false);
+              }}
+              style={{
+                width: 110,
+                border: "none",
+                background: "transparent",
+                outline: "none",
+              }}
+            />
+            <span className="grp-act" title="确定" onClick={doCreateGroup}>
+              ✓
+            </span>
+            <span
+              className="grp-act"
+              title="取消"
+              onClick={() => setCreatingGroup(false)}
+            >
+              ✕
+            </span>
+          </span>
+        ) : (
+          <span
+            className="chip chip-new"
+            role="button"
+            tabIndex={0}
+            style={{ cursor: "pointer" }}
+            onClick={() => setCreatingGroup(true)}
+          >
+            ＋ 新建分组
+          </span>
+        )}
+      </div>
+    </div>
+  );
 
   return (
-    <div className={`library ${view === "discover" ? "discovery-view" : "library-view"}${detailId ? " with-detail" : ""}`}>
+    <div
+      className={`library ${view === "discover" ? "discovery-view" : "library-view"}${detailId ? " with-detail" : ""}`}
+    >
       <div className="list-pane">
-        <div className="workspace-heading"><div><span className="eyebrow">{view === "library" ? "YOUR RESEARCH LIBRARY" : "DISCOVER PAPERS"}</span><h1>{view === "library" ? "文献库" : "发现论文"}</h1><p>{view === "library" ? "把论文整理成可以持续追问的研究资料。" : "检索公开学术来源，预览后选择收入文献库。"}</p></div><div className="heading-actions"><label className="btn-outline upload-btn">{uploading ? "导入中…" : "导入文献"}<input type="file" accept=".pdf,.docx" hidden disabled={uploading} aria-label="导入 PDF 或 DOCX" onChange={e => { const file = e.target.files?.[0]; if (file) void doUpload(file); e.currentTarget.value = ""; }} /></label>{view === "library" && <button className="primary" onClick={onDiscover}>＋ 发现论文</button>}</div></div>
-        {view === "discover" && <div className="discovery-guide"><span>01 搜索主题</span><span>02 预览候选</span><span>03 选择入库</span></div>}
-        {view === "discover" && <div className="lib-head">
-          <div className="lib-row main">
-            <input
-              type="text"
-              className="lib-search"
-              placeholder="输入主题检索论文，如「图神经网络 推荐系统」…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && doSearch()}
-            />
-            <button className="primary" disabled={searching || !searchQuery.trim() || sources.length === 0} onClick={doSearch}>
-              {searching ? "检索中…" : "检索"}
-            </button>
+        <div className="workspace-heading">
+          <div>
+            <span className="eyebrow">
+              {view === "library" ? "YOUR RESEARCH LIBRARY" : "DISCOVER PAPERS"}
+            </span>
+            <h1>{view === "library" ? "文献库" : "发现论文"}</h1>
+            <p>
+              {view === "library"
+                ? "把论文整理成可以持续追问的研究资料。"
+                : "检索公开学术来源，预览后保存文献信息，全文需另行获取。"}
+            </p>
           </div>
-          <div className="lib-row sub">
-            <span className="hint row-label">来源</span>
-            <div className="chips">
-              {Object.entries(SOURCE_LABELS).map(([key, label]) => (
-                <span key={key} className={`chip ${sources.includes(key) ? "on" : ""}`} onClick={() => toggleSource(key)}>
-                  {label}
-                </span>
-              ))}
-            </div>
-            <span className="flex-spacer" />
-            <button
-              className="ghost sm"
-              onClick={() => setShowAdvanced((v) => !v)}
-              title="作者、标题/摘要限定、排序、引用数与全文过滤"
-            >
-              高级筛选 {showAdvanced ? "▲" : "▼"}
-            </button>
+          <div className="heading-actions">
+            <label className="btn-outline upload-btn">
+              {uploading ? "导入中…" : "导入文献"}
+              <input
+                type="file"
+                accept=".pdf,.docx"
+                hidden
+                disabled={uploading}
+                aria-label="导入 PDF 或 DOCX"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) void doUpload(file);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+            {view === "library" && (
+              <button className="primary" onClick={onDiscover}>
+                ＋ 发现论文
+              </button>
+            )}
           </div>
-          {showAdvanced && (
-            <div className="adv-grid">
-              <label className="adv-field">
-                <span>作者</span>
-                <input
-                  type="text"
-                  placeholder="如 Yann LeCun"
-                  value={author}
-                  onChange={(e) => setAuthor(e.target.value)}
-                />
-              </label>
-              <label className="adv-field">
-                <span>匹配字段</span>
-                <select value={field} onChange={(e) => setField(e.target.value as FieldScope)}>
-                  {(Object.keys(FIELD_LABELS) as FieldScope[]).map((k) => (
-                    <option key={k} value={k}>{FIELD_LABELS[k]}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="adv-field">
-                <span>排序</span>
-                <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
-                  {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
-                    <option key={k} value={k}>{SORT_LABELS[k]}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="adv-field">
-                <span>最低被引</span>
-                <input
-                  type="number"
-                  placeholder="0"
-                  min={0}
-                  value={minCitations}
-                  onChange={(e) => setMinCitations(e.target.value)}
-                />
-              </label>
-              <label className="adv-field">
-                <span>发表年份</span>
-                <div className="adv-year">
-                  <input type="number" placeholder="从" min={1900} max={2100} value={yearFrom} onChange={(e) => setYearFrom(e.target.value)} />
-                  <i>–</i>
-                  <input type="number" placeholder="到" min={1900} max={2100} value={yearTo} onChange={(e) => setYearTo(e.target.value)} />
-                </div>
-              </label>
-              <label className="adv-check">
-                <input type="checkbox" checked={oaOnly} onChange={(e) => setOaOnly(e.target.checked)} />
-                仅可下载全文
-              </label>
+        </div>
+        {view === "discover" && (
+          <div className="discovery-guide">
+            <span>01 搜索主题</span>
+            <span>02 预览候选</span>
+            <span>03 保存文献信息</span>
+          </div>
+        )}
+        {view === "discover" && (
+          <div className="lib-head">
+            <div className="lib-row main">
+              <input
+                type="text"
+                className="lib-search"
+                placeholder="输入主题检索论文，如「图神经网络 推荐系统」…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && doSearch()}
+              />
+              <button
+                className="primary"
+                disabled={
+                  searching || !searchQuery.trim() || sources.length === 0
+                }
+                onClick={doSearch}
+              >
+                {searching ? "检索中…" : "检索"}
+              </button>
             </div>
-          )}
-        </div>}
+            <div className="lib-row sub">
+              <span className="hint row-label">来源</span>
+              <div className="chips">
+                {Object.entries(SOURCE_LABELS).map(([key, label]) => (
+                  <span
+                    key={key}
+                    className={`chip ${sources.includes(key) ? "on" : ""}`}
+                    onClick={() => toggleSource(key)}
+                  >
+                    {label}
+                  </span>
+                ))}
+              </div>
+              <span className="flex-spacer" />
+              <button
+                className="ghost sm"
+                onClick={() => setShowAdvanced((v) => !v)}
+                title="作者、标题/摘要限定、排序、引用数与全文过滤"
+              >
+                高级筛选 {showAdvanced ? "▲" : "▼"}
+              </button>
+            </div>
+            {showAdvanced && (
+              <div className="adv-grid">
+                <label className="adv-field">
+                  <span>作者</span>
+                  <input
+                    type="text"
+                    placeholder="如 Yann LeCun"
+                    value={author}
+                    onChange={(e) => setAuthor(e.target.value)}
+                  />
+                </label>
+                <label className="adv-field">
+                  <span>匹配字段</span>
+                  <select
+                    value={field}
+                    onChange={(e) => setField(e.target.value as FieldScope)}
+                  >
+                    {(Object.keys(FIELD_LABELS) as FieldScope[]).map((k) => (
+                      <option key={k} value={k}>
+                        {FIELD_LABELS[k]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="adv-field">
+                  <span>排序</span>
+                  <select
+                    value={sortKey}
+                    onChange={(e) => setSortKey(e.target.value as SortKey)}
+                  >
+                    {(Object.keys(SORT_LABELS) as SortKey[]).map((k) => (
+                      <option key={k} value={k}>
+                        {SORT_LABELS[k]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="adv-field">
+                  <span>最低被引</span>
+                  <input
+                    type="number"
+                    placeholder="0"
+                    min={0}
+                    value={minCitations}
+                    onChange={(e) => setMinCitations(e.target.value)}
+                  />
+                </label>
+                <label className="adv-field">
+                  <span>发表年份</span>
+                  <div className="adv-year">
+                    <input
+                      type="number"
+                      placeholder="从"
+                      min={1900}
+                      max={2100}
+                      value={yearFrom}
+                      onChange={(e) => setYearFrom(e.target.value)}
+                    />
+                    <i>–</i>
+                    <input
+                      type="number"
+                      placeholder="到"
+                      min={1900}
+                      max={2100}
+                      value={yearTo}
+                      onChange={(e) => setYearTo(e.target.value)}
+                    />
+                  </div>
+                </label>
+                <label className="adv-check">
+                  <input
+                    type="checkbox"
+                    checked={oaOnly}
+                    onChange={(e) => setOaOnly(e.target.checked)}
+                  />
+                  仅可下载全文
+                </label>
+              </div>
+            )}
+          </div>
+        )}
         <div className="lib-filter">
           <div className="library-filter-row">
-          <input
-            type="text"
-            className="lib-q"
-            placeholder="库内筛选：标题 / 作者 / DOI…"
-            value={qInput}
-            onChange={(e) => setQInput(e.target.value)}
-          />
-          <label className="library-group-select">分组 <select aria-label="筛选文献分组" value={untaggedOnly ? "__untagged__" : tag} onChange={e => { setUntaggedOnly(e.target.value === "__untagged__"); setTag(e.target.value === "__untagged__" ? "" : e.target.value); }}><option value="">全部分组</option>{groups.map(g => <option key={g.name} value={g.name}>{g.name}（{g.count}）</option>)}<option value="__untagged__">未分组</option></select></label>
+            <input
+              type="text"
+              className="lib-q"
+              placeholder="库内筛选：标题 / 作者 / DOI…"
+              value={qInput}
+              onChange={(e) => setQInput(e.target.value)}
+            />
+            <label className="library-group-select">
+              分组{" "}
+              <select
+                aria-label="筛选文献分组"
+                value={untaggedOnly ? "__untagged__" : tag}
+                onChange={(e) => {
+                  setUntaggedOnly(e.target.value === "__untagged__");
+                  setTag(
+                    e.target.value === "__untagged__" ? "" : e.target.value,
+                  );
+                }}
+              >
+                <option value="">全部分组</option>
+                {groups.map((g) => (
+                  <option key={g.name} value={g.name}>
+                    {g.name}（{g.count}）
+                  </option>
+                ))}
+                <option value="__untagged__">未分组</option>
+              </select>
+            </label>
           </div>
-          <div className="seg">
-            <button className={`seg-item ${status === "" ? "on" : ""}`} onClick={() => setStatus("")}>
+          <span className="hint filter-label">
+            处理阶段（全库数量，非分组）
+          </span>
+          <div className="seg" aria-label="按处理阶段筛选">
+            <button
+              className={`seg-item ${status === "" ? "on" : ""}`}
+              onClick={() => setStatus("")}
+            >
               全部 {summary?.total ?? ""}
             </button>
             {STATUS_ORDER.filter((s) => summary?.counts[s]).map((s) => (
-              <button key={s} className={`seg-item ${status === s ? "on" : ""}`} onClick={() => setStatus(s)}>
+              <button
+                key={s}
+                title={STATUS_HELP[s]}
+                className={`seg-item ${status === s ? "on" : ""}`}
+                onClick={() => setStatus(s)}
+              >
                 {statusLabel(s)} {summary?.counts[s]}
               </button>
             ))}
           </div>
+          <p className="stage-explanation">
+            {status
+              ? STATUS_HELP[status]
+              : "文献库既保存待读论文的题录信息，也保存已处理全文；保存信息不等于下载。阶段记录最后完成的步骤，全文列单独显示文件是否已在本地。"}
+          </p>
         </div>
-        {view === "library" && (groupHost ? createPortal(groupPanel, groupHost) : groupPanel)}
+        {view === "library" &&
+          (groupHost ? createPortal(groupPanel, groupHost) : groupPanel)}
         {checked.size > 0 && (
           <div className="lib-bulk">
             <span className="bulk-count">已选 {checked.size} 篇</span>
-            <button className="primary" disabled={checked.size < 2 || checked.size > 6} onClick={() => onResearch?.([...checked], true)}>比较所选论文</button>
-            <button disabled={checked.size > 6} onClick={() => onResearch?.([...checked], false)}>向所选论文提问</button>
-            {checked.size > 6 && <span className="hint">每次研究最多选择 6 篇</span>}
-            <select value={bulkTarget} onChange={(e) => applyBulk(e.target.value)} disabled={bulkBusy}>
+            <button
+              className="primary"
+              disabled={bulkBusy || checked.size < 2 || checked.size > 6}
+              onClick={() => onResearch?.([...checked], true)}
+            >
+              比较所选论文
+            </button>
+            <button
+              disabled={bulkBusy || checked.size > 6}
+              onClick={() => onResearch?.([...checked], false)}
+            >
+              向所选论文提问
+            </button>
+            {checked.size > 6 && (
+              <span className="hint">每次研究最多选择 6 篇</span>
+            )}
+            <select
+              value={bulkTarget}
+              onChange={(e) => applyBulk(e.target.value)}
+              disabled={bulkBusy}
+            >
               <option value="">移动到分组…</option>
               {groups.map((g) => (
-                <option key={g.name} value={g.name}>{g.name}</option>
+                <option key={g.name} value={g.name}>
+                  {g.name}
+                </option>
               ))}
               <option value="__new__">＋ 新建分组…</option>
             </select>
-            <button className="ghost sm" onClick={removeBulk} disabled={bulkBusy}>移出分组</button>
-            <button className="ghost sm" onClick={() => setChecked(new Set())}>清空选择</button>
+            <button
+              className="ghost sm"
+              onClick={removeBulk}
+              disabled={bulkBusy}
+            >
+              移出分组
+            </button>
+            <button
+              className="danger sm"
+              disabled={bulkBusy}
+              onClick={() =>
+                setDeleteTargets(
+                  [...checked].map((id) => ({
+                    id,
+                    title: knownTitles.current.get(id) ?? id,
+                  })),
+                )
+              }
+            >
+              删除所选论文
+            </button>
+            <button
+              className="ghost sm"
+              disabled={bulkBusy}
+              onClick={() => setChecked(new Set())}
+            >
+              清空选择
+            </button>
           </div>
         )}
         {(notes.length > 0 || err) && (
           <div className="lib-notes">
             {err && <div className="err">⚠ {err}</div>}
             {notes.map((n, i) => (
-              <div key={i} className="hint">· {n}</div>
+              <div key={i} className="hint">
+                · {n}
+              </div>
             ))}
           </div>
         )}
@@ -582,22 +862,38 @@ export default function Library({
             <div className="empty-state">
               <div className="es-icon">📚</div>
               <div className="es-title">
-                {q || status ? "没有符合筛选条件的论文" : untaggedOnly ? "没有未分组的论文" : tag ? "该分组下暂无论文" : "文献库还是空的"}
+                {q || status
+                  ? "没有符合筛选条件的论文"
+                  : untaggedOnly
+                    ? "没有未分组的论文"
+                    : tag
+                      ? "该分组下暂无论文"
+                      : "文献库还是空的"}
               </div>
-              <div className="es-sub">{q || status || tag || untaggedOnly ? "当前筛选没有匹配的论文，试着放宽条件。" : "导入 PDF/DOCX，或到「发现论文」选择资料；进入论文后开始处理与精读。"}</div>
+              <div className="es-sub">
+                {q || status || tag || untaggedOnly
+                  ? "当前筛选没有匹配的论文，试着放宽条件。"
+                  : "导入 PDF/DOCX，或到「发现论文」选择资料；进入论文后开始处理与精读。"}
+              </div>
             </div>
           ) : (
             <table className="papers">
               <thead>
                 <tr>
                   <th style={{ width: 34 }}>
-                    <input type="checkbox" checked={allVisibleChecked} onChange={toggleAllVisible} title="全选本页" />
+                    <input
+                      type="checkbox"
+                      disabled={bulkBusy}
+                      checked={allVisibleChecked}
+                      onChange={toggleAllVisible}
+                      title="全选本页"
+                    />
                   </th>
                   <th>论文与研究主题（{total} 篇）</th>
-                  <th style={{ width: 86 }}>状态</th>
+                  <th style={{ width: 112 }}>处理阶段</th>
                   <th style={{ width: 56 }}>年份</th>
                   <th style={{ width: 56 }}>被引</th>
-                  <th style={{ width: 60 }}>全文</th>
+                  <th style={{ width: 116 }}>全文文件</th>
                 </tr>
               </thead>
               <tbody>
@@ -611,25 +907,63 @@ export default function Library({
                       <input
                         type="checkbox"
                         aria-label={`选择 ${p.title}`}
+                        disabled={bulkBusy}
                         checked={checked.has(p.source_id)}
                         onChange={() => toggleChecked(p.source_id)}
                       />
                     </td>
                     <td className="title-cell">
-                      <button className="paper-title" onClick={e => { e.stopPropagation(); onOpenDetail(p.source_id); }}>{p.title}</button>
-                      <div className="paper-authors hint">{p.authors.slice(0, 3).join(" · ") || p.source}</div>
-                      {p.tag && <div className="hint paper-tagline">分组：{p.tag}</div>}
-                      {p.error && <div className="paper-err" title={p.error}>⚠ {fmtError(p.error)}</div>}
+                      <button
+                        className="paper-title"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenDetail(p.source_id);
+                        }}
+                      >
+                        {p.title}
+                      </button>
+                      <div className="paper-authors hint">
+                        {p.authors.slice(0, 3).join(" · ") || p.source}
+                      </div>
+                      {p.tag && (
+                        <div className="hint paper-tagline">分组：{p.tag}</div>
+                      )}
+                      {p.error && (
+                        <div className="paper-err" title={p.error}>
+                          ⚠ {fmtError(p.error)}
+                        </div>
+                      )}
                     </td>
                     <td>
-                      <span className={`tag status-${p.status}`}>
+                      <span
+                        className={`tag status-${p.status}`}
+                        title={STATUS_HELP[p.status]}
+                      >
                         {statusLabel(p.status)}
                       </span>
                     </td>
                     <td className="num">{p.year ?? "—"}</td>
                     <td className="num">{p.citations ?? "—"}</td>
-                    <td className="num" title={p.has_pdf ? "已下载全文" : p.abstract_only ? "仅摘要入库" : "未获取全文"}>
-                      {p.has_pdf ? "✓" : p.abstract_only ? "摘要" : "—"}
+                    <td
+                      className="file-state"
+                      title={
+                        p.has_local_file
+                          ? "全文文件已保存在本地"
+                          : p.has_pdf
+                            ? "来源提供下载链接，但文件尚未保存到本地"
+                            : "尚无本地全文，可尝试获取全文或导入文件"
+                      }
+                    >
+                      <span>{p.has_local_file ? "已保存" : "未保存"}</span>
+                      {!p.has_local_file && (
+                        <small>
+                          {p.has_pdf
+                            ? "有来源链接"
+                            : p.abstract_only
+                              ? "仅题录/摘要"
+                              : "可导入文件"}
+                        </small>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -645,43 +979,114 @@ export default function Library({
           )}
         </div>
       </div>
-      {view === "library" && (detailId ? (
-        <PaperDetail
-          key={detailId}
-          id={detailId}
-          onClose={() => onOpenDetail(null)}
-          onStartAgent={onStartAgent}
-          onChanged={() => {
-            onChanged();
-            load();
-            loadTags();
-          }}
-        />
-      ) : (
-        <div className="detail-pane detail-empty">
-          <div className="es-icon">🗂</div>
-          <div className="es-sub">点击左侧论文，查看详情、精读报告与实验结构</div>
+      {view === "library" &&
+        (detailId ? (
+          <PaperDetail
+            key={detailId}
+            id={detailId}
+            onClose={() => onOpenDetail(null)}
+            onStartAgent={onStartAgent}
+            onChanged={() => {
+              onChanged();
+              load();
+              loadTags();
+            }}
+          />
+        ) : (
+          <div className="detail-pane detail-empty">
+            <div className="es-icon">🗂</div>
+            <div className="es-sub">
+              点击左侧论文，查看详情、精读报告与实验结构
+            </div>
+          </div>
+        ))}
+
+      {deleteTargets && (
+        <div className="modal-mask">
+          <section
+            className="modal delete-confirm"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-title"
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && !bulkBusy) setDeleteTargets(null);
+            }}
+          >
+            <div className="modal-head">
+              <h2 id="delete-title">
+                删除所选 {deleteTargets.length} 篇论文？
+              </h2>
+            </div>
+            <div className="modal-body">
+              <p>
+                将从文献库移除记录，并清理对应的本地全文、解析文本、报告与索引。这不是移出分组，删除后无法撤销。
+              </p>
+              <p className="hint">
+                下面列出本次实际删除范围，包含切换筛选前勾选的论文。
+              </p>
+              <ul>
+                {deleteTargets.map((p) => (
+                  <li key={p.id}>{p.title}</li>
+                ))}
+              </ul>
+            </div>
+            <div className="modal-foot">
+              <button
+                autoFocus
+                disabled={bulkBusy}
+                onClick={() => setDeleteTargets(null)}
+              >
+                取消
+              </button>
+              <button
+                className="danger"
+                disabled={bulkBusy}
+                onClick={() => void deleteSelected()}
+              >
+                {bulkBusy
+                  ? `删除中 ${deleteProgress}/${deleteTargets.length}`
+                  : "确认删除"}
+              </button>
+            </div>
+          </section>
         </div>
-      ))}
+      )}
 
       {preview && (
-        <div className={view === "discover" ? "discovery-results" : "modal-mask"} onClick={() => setPreview(null)}>
-          <div className={view === "discover" ? "surface-card discovery-result-card" : "modal"} onClick={(e) => e.stopPropagation()}>
+        <div
+          className={view === "discover" ? "discovery-results" : "modal-mask"}
+          onClick={() => setPreview(null)}
+        >
+          <div
+            className={
+              view === "discover"
+                ? "surface-card discovery-result-card"
+                : "modal"
+            }
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-head">
               <div>
                 <div className="modal-title">
-                  检索到 {preview.candidates.length} 条候选（新 {freshCount} 条，库内已有 {preview.candidates.length - freshCount} 条）
+                  检索到 {preview.candidates.length} 条候选（新 {freshCount}{" "}
+                  条，库内已有 {preview.candidates.length - freshCount} 条）
                 </div>
                 <div className="hint">
                   主题：{preview.topics.join(" / ")}
-                  {preview.optimized ? "（已自动优化）" : ""} · 各源候选：{JSON.stringify(preview.source_hits)}
+                  {preview.optimized ? "（已自动优化）" : ""} · 各源候选：
+                  {JSON.stringify(preview.source_hits)}
                 </div>
               </div>
-              <span className="modal-x" onClick={() => setPreview(null)}>✕</span>
+              <span className="modal-x" onClick={() => setPreview(null)}>
+                ✕
+              </span>
             </div>
             <div className="modal-body">
               {preview.candidates.map((c) => (
-                <label key={c.source_id} className={`cand ${c.duplicate_of ? "dup" : ""}`}>
+                <label
+                  key={c.source_id}
+                  className={`cand ${c.duplicate_of ? "dup" : ""}`}
+                >
                   <input
                     type="checkbox"
                     checked={selected.has(c.source_id)}
@@ -692,16 +1097,31 @@ export default function Library({
                     {c.title}
                     <span className="hint">
                       {" "}
-                      · {c.source} · {c.year ?? "-"} · 被引 {c.citations ?? "-"} ·{" "}
-                      {c.has_pdf ? "有全文" : "仅摘要"}
+                      · {c.source} · {c.year ?? "-"} · 被引 {c.citations ?? "-"}{" "}
+                      · {c.has_pdf ? "提供全文链接（未下载）" : "无全文链接"}
                     </span>
-                    {c.duplicate_of && <span className="tag" style={{ marginLeft: 6 }}>库内已有</span>}
+                    {c.duplicate_of && (
+                      <span className="tag" style={{ marginLeft: 6 }}>
+                        库内已有
+                      </span>
+                    )}
                   </span>
                 </label>
               ))}
             </div>
             <div className="modal-foot">
-              <span className="chip" onClick={() => setSelected(new Set(preview.candidates.filter((c) => !c.duplicate_of).map((c) => c.source_id)))}>
+              <span
+                className="chip"
+                onClick={() =>
+                  setSelected(
+                    new Set(
+                      preview.candidates
+                        .filter((c) => !c.duplicate_of)
+                        .map((c) => c.source_id),
+                    ),
+                  )
+                }
+              >
                 全选新的
               </span>
               <input
@@ -711,8 +1131,12 @@ export default function Library({
                 onChange={(e) => setIngestTag(e.target.value)}
                 style={{ flex: 1 }}
               />
-              <button className="primary" disabled={ingesting || selected.size === 0} onClick={doIngest}>
-                {ingesting ? "入库中…" : `入库所选（${selected.size}）`}
+              <button
+                className="primary"
+                disabled={ingesting || selected.size === 0}
+                onClick={doIngest}
+              >
+                {ingesting ? "入库中…" : `保存所选信息（${selected.size}）`}
               </button>
             </div>
           </div>

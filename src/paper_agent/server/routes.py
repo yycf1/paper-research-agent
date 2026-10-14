@@ -83,7 +83,8 @@ def paper_to_dict(p: Paper) -> dict:
 def record_to_dict(rec: PaperRecord, *, with_abstract: bool = False) -> dict:
     out = paper_to_dict(rec.paper)
     out["abstract"] = rec.paper.abstract if with_abstract else ""
-    out.update({"status": rec.status, "error": rec.error, "added_at": rec.added_at, "tag": rec.tag})
+    out.update({"status": rec.status, "error": rec.error, "added_at": rec.added_at, "tag": rec.tag,
+                "has_local_file": bool(rec.pdf_path and Path(rec.pdf_path).is_file())})
     return out
 
 
@@ -592,7 +593,7 @@ def api_chat(req: ChatRequest, lib: Library = Depends(open_lib)) -> dict:
 
         reply = handle_message(
             req.message, lib=lib, retriever=_retriever(), params=params, cfg=cfg,
-            history=history,
+            history=history, allow_ingest=False,
         )
         store.append_message(
             sid, role="assistant", content=reply.reply, intent=reply.intent,

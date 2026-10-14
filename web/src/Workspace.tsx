@@ -145,7 +145,7 @@ export default function Workspace() {
           </span>
           <span className="hint">
             {summary
-              ? `${summary.total} 篇文献 · ${summary.vector_chunks} 知识块`
+              ? `${summary.total} 条文献记录 · ${summary.vector_chunks} 索引片段`
               : "正在连接工作区…"}
           </span>
         </header>
@@ -189,6 +189,7 @@ export default function Workspace() {
               pendingTask={pendingTask}
               onConsumePendingTask={consumePendingTask}
               researchScope={researchScope}
+              onDiscover={() => navigate("discover")}
             />
           </div>
           <div className={`page ${tab === "tasks" ? "" : "off"}`}>

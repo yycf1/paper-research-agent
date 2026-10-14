@@ -1,7 +1,7 @@
 """对话助手服务：意图路由 → 分发执行，返回结构化回复。
 
 对应 CLI `pa chat` REPL 与 Web `POST /api/chat`。单轮处理独立成函数后，
-CLI 负责循环与渲染，Web 负责会话与传输，两者行为保持一致。
+CLI 负责循环与渲染，Web 负责会话与传输。Web 禁止对话自动入库，执行操作交给显式任务。
 """
 
 from __future__ import annotations
@@ -57,6 +57,7 @@ def handle_message(
     cfg: dict | None = None,
     chat_fn=chat,
     history: list[tuple[str, str]] | None = None,
+    allow_ingest: bool = True,
 ) -> AssistantReply:
     """处理一条用户消息：分类意图并执行，永不抛异常（错误转成 reply）。
 
@@ -70,7 +71,11 @@ def handle_message(
     if intent == "exit":
         return AssistantReply("exit", "再见，祝科研顺利～", understanding=understanding)
     if intent == "help":
-        return AssistantReply("help", HELP_TEXT, understanding=understanding)
+        text = HELP_TEXT if allow_ingest else (
+            "连续对话用于文献问答、解释和研究方向讨论，不会自动添加论文。"
+            "找新论文请打开「发现论文」预览后保存；需要多步操作可切换「执行任务」。"
+        )
+        return AssistantReply("help", text, understanding=understanding)
     if intent == "off_topic":
         return AssistantReply("off_topic", OFF_TOPIC_TEXT, understanding=understanding)
     if intent == "clarify":
@@ -85,6 +90,12 @@ def handle_message(
         stat_line = "  ".join(f"{s}: {n}" for s, n in sorted(counts.items()))
         return AssistantReply("status", f"文献库共 {total} 篇：{stat_line}", understanding=understanding)
     if intent == "search":
+        if not allow_ingest:
+            return AssistantReply(
+                "search", "这条需求涉及查找新论文。连续对话不会自动检索入库；"
+                "请到「发现论文」预览并选择，或把这条需求转为执行任务。",
+                understanding=understanding,
+            )
         return _do_search(text, route, lib=lib, cfg=cfg, params=params, understanding=understanding)
 
     # qa：意图分类兜底到这里

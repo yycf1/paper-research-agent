@@ -25,15 +25,14 @@ interface Turn {
 const WELCOME: Turn[] = [
   {
     role: "bot",
-    text:
-      "你好，我是 paper-agent 助手。可以：\n① 检索新论文——「帮我找 2023 年以后的 transformer 综述」\n② 问答库内文献——「图像分割那篇综述的主要结论？」（带出处）\n③ 查看库状态——「库里有多少论文」\n④ 推荐方向——「不知道该看什么论文」\n\n对话会自动保存，左侧可新建或切换会话。",
+    text: "这里适合连续追问库内论文、解释方法、讨论研究方向。对话会自动保存，可在左侧切换。\n\n对话不会自动检索入库。查找新论文请用「发现论文」；需要检索、入库、生成方案等多步操作，请明确提交到「执行任务」。",
   },
 ];
 
 const AGENT_SAMPLES = [
   "找 2 篇 2024 年以后的 GNN 推荐综述入库",
-  "看看库状态，再给我推荐研究方向",
-  "库里医学影像的论文都用了什么数据集？",
+  "从库中选择两篇医学影像论文，比较数据集并整理证据",
+  "为库内一篇论文生成复现方案，先不要运行代码",
 ];
 
 const STATUS_TEXT: Record<string, string> = {
@@ -43,7 +42,15 @@ const STATUS_TEXT: Record<string, string> = {
   fatal: "fatal",
 };
 
-function turnsFromHistory(messages: { role: string; content: string; understanding: string | null; notes: string[]; sources?: SourceRef[] | null }[]): Turn[] {
+function turnsFromHistory(
+  messages: {
+    role: string;
+    content: string;
+    understanding: string | null;
+    notes: string[];
+    sources?: SourceRef[] | null;
+  }[],
+): Turn[] {
   return messages.map((m) => ({
     role: m.role === "user" ? "user" : "bot",
     text: m.content,
@@ -61,6 +68,7 @@ export default function Assistant({
   pendingTask,
   onConsumePendingTask,
   researchScope,
+  onDiscover,
 }: {
   /** 本页是否可见（App 双页常驻挂载，切走时仅隐藏） */
   active: boolean;
@@ -72,6 +80,7 @@ export default function Assistant({
   pendingTask: { task: string; anchor: string } | null;
   onConsumePendingTask: () => void;
   researchScope?: { ids: string[]; compare: boolean; key: number } | null;
+  onDiscover: () => void;
 }) {
   const [mode, setMode] = useState<"qa" | "chat" | "agent">("qa");
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -85,15 +94,35 @@ export default function Assistant({
   const inputRef = useRef<HTMLInputElement>(null);
   const pollTimer = useRef<number | null>(null);
   const esRef = useRef<EventSource | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<AgentTaskBrief[]>([]);
-  const [anchorId, setAnchorId] = useState("");  // M26：本任务锚定论文（提交时随任务下发）
+  const [historyError, setHistoryError] = useState("");
+  const [runningTaskId, setRunningTaskId] = useState<string | null>(null);
+  const displayedTaskId = useRef<string | null>(null);
+  const historyRequest = useRef(0);
+  const [anchorId, setAnchorId] = useState(""); // M26：本任务锚定论文（提交时随任务下发）
   const handledResearch = useRef<number | null>(null);
 
   const refreshSessions = useCallback(
-    () => api.sessions().then((d) => setSessions(d.sessions)).catch(() => {}),
+    () =>
+      api
+        .sessions()
+        .then((d) => setSessions(d.sessions))
+        .catch(() => {}),
     [],
   );
+  const refreshHistory = useCallback(async () => {
+    try {
+      const data = await api.agentTasks();
+      setHistory(data.tasks);
+      setHistoryError("");
+    } catch (e) {
+      setHistoryError(`任务历史加载失败：${e}`);
+    }
+  }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react/set-state-in-effect -- 状态在异步请求完成后更新。
+    if (active && mode === "agent") void refreshHistory();
+  }, [active, mode, agentBusy, refreshHistory]);
 
   const openSession = useCallback(async (sid: string | null) => {
     setActiveId(sid);
@@ -192,7 +221,8 @@ export default function Assistant({
       } else {
         refreshSessions();
       }
-      if (reply.intent === "search" && reply.new_papers.length > 0) onLibChanged();
+      if (reply.intent === "search" && reply.new_papers.length > 0)
+        onLibChanged();
     } catch (e) {
       setTurns((t) => [...t, { role: "bot", text: `请求失败：${e}` }]);
     } finally {
@@ -206,14 +236,17 @@ export default function Assistant({
     async function pollAgentTask(id: string) {
       try {
         const t = await api.agentTask(id);
-        setAgentTask(t);
+        if (displayedTaskId.current === id) setAgentTask(t);
         if (t.status === "done" || t.status === "error") {
           setAgentBusy(false);
+          setRunningTaskId(null);
           if (t.status === "done") onLibChanged(); // 任务可能入库了论文
           return;
         }
       } catch {
         setAgentBusy(false);
+        setRunningTaskId(null);
+        setHistoryError("任务连接中断，请在左侧重新打开任务检查状态。");
         return;
       }
       pollTimer.current = window.setTimeout(() => void pollAgentTask(id), 1200);
@@ -225,21 +258,35 @@ export default function Assistant({
     const task = (text ?? input).trim();
     if (!task || agentBusy) return;
     if (pollTimer.current) window.clearTimeout(pollTimer.current);
+    esRef.current?.close();
+    esRef.current = null;
     const anchor = anchorId; // 锚只随本次提交走，提交后清掉，不污染下一个任务
     setInput("");
     setAgentBusy(true);
+    historyRequest.current++;
+    displayedTaskId.current = null;
     setAgentTask(null);
     try {
       const t = await api.agentSubmit(task, undefined, anchor || undefined);
       setAnchorId("");
+      displayedTaskId.current = t.id;
+      setRunningTaskId(t.id);
       setAgentTask(t);
       listenEvents(t.id);
+      void refreshHistory();
     } catch (e) {
       setAgentBusy(false);
       setAgentTask({
-        id: "", task, status: "error", step_count: 0, pending_confirm: null,
-        answer: "", stopped_reason: "error", usage: { prompt: 0, completion: 0 },
-        error: String(e), steps: [],
+        id: "",
+        task,
+        status: "error",
+        step_count: 0,
+        pending_confirm: null,
+        answer: "",
+        stopped_reason: "error",
+        usage: { prompt: 0, completion: 0 },
+        error: String(e),
+        steps: [],
       });
     }
   };
@@ -248,7 +295,9 @@ export default function Assistant({
   // 断流（代理缓冲/服务重启）时回退到轮询兜底，保证 UI 不冻结。
   const listenEvents = (id: string) => {
     esRef.current?.close();
-    const es = new EventSource(`/api/agent/tasks/${encodeURIComponent(id)}/events`);
+    const es = new EventSource(
+      `/api/agent/tasks/${encodeURIComponent(id)}/events`,
+    );
     esRef.current = es;
     es.onmessage = (ev) => {
       let m:
@@ -262,14 +311,27 @@ export default function Assistant({
         return;
       }
       if (m.type === "snapshot") {
-        setAgentTask(m);
+        if (displayedTaskId.current === id) setAgentTask(m);
+        if (m.status === "done" || m.status === "error") {
+          setAgentBusy(false);
+          setRunningTaskId(null);
+        }
       } else if (m.type === "step") {
         const step = m.step;
-        setAgentTask((cur) => (cur ? { ...cur, steps: [...(cur.steps ?? []), step] } : cur));
+        setAgentTask((cur) =>
+          cur?.id === id
+            ? { ...cur, steps: [...(cur.steps ?? []), step] }
+            : cur,
+        );
       } else if (m.type === "status") {
         const st = m.state;
-        setAgentTask((cur) => (cur ? { ...cur, ...st, steps: cur.steps } : (st as AgentTaskState)));
-        if (st.status === "done" || st.status === "error") setAgentBusy(false);
+        setAgentTask((cur) =>
+          cur?.id === id ? { ...cur, ...st, steps: cur.steps } : cur,
+        );
+        if (st.status === "done" || st.status === "error") {
+          setAgentBusy(false);
+          setRunningTaskId(null);
+        }
         if (st.status === "done") onLibChanged();
       } else {
         es.close();
@@ -286,71 +348,106 @@ export default function Assistant({
 
   // ---- 任务历史（M23）：live 条目来自注册表，其余由磁盘轨迹回读 ----
 
-  const toggleHistory = async () => {
-    const next = !historyOpen;
-    setHistoryOpen(next);
-    if (next) {
-      const d = await api.agentTasks().catch(() => null);
-      if (d) setHistory(d.tasks);
+  const loadHistory = async (h: Pick<AgentTaskBrief, "id" | "live">) => {
+    const request = ++historyRequest.current;
+    try {
+      const full = await api.agentTask(h.id); // 历史 id 由轨迹文件回读，含全部步骤
+      if (request !== historyRequest.current) return;
+      displayedTaskId.current = full.id;
+      setAgentTask(full);
+      setHistoryError("");
+      if (
+        h.live &&
+        (full.status === "running" || full.status === "waiting_confirm") &&
+        !agentBusy
+      ) {
+        setAgentBusy(true);
+        setRunningTaskId(full.id);
+        listenEvents(full.id);
+      }
+    } catch (e) {
+      if (request === historyRequest.current)
+        setHistoryError(`无法打开任务：${e}`);
     }
   };
 
-  const loadHistory = async (h: AgentTaskBrief) => {
-    setHistoryOpen(false);
-    esRef.current?.close();
-    esRef.current = null;
-    if (pollTimer.current) window.clearTimeout(pollTimer.current);
-    try {
-      const full = await api.agentTask(h.id); // 历史 id 由轨迹文件回读，含全部步骤
-      setAgentBusy(false);
-      setAgentTask(full);
-    } catch {
-      /* 轨迹缺失等：保留当前视图 */
-    }
+  const newAgent = () => {
+    if (agentBusy) return;
+    historyRequest.current++;
+    displayedTaskId.current = null;
+    setAgentTask(null);
+    setInput("");
+    setAnchorId("");
+    setHistoryError("");
+    inputRef.current?.focus();
   };
 
   const decideConfirm = async (approve: boolean) => {
     if (!agentTask) return;
+    const id = agentTask.id;
     try {
-      await api.agentConfirm(agentTask.id, approve);
-    } catch {
-      /* 状态已变化时忽略，下一次轮询会取到最新状态 */
+      await api.agentConfirm(id, approve);
+    } catch (e) {
+      setHistoryError(`确认操作失败，请刷新任务状态后重试：${e}`);
     }
     try {
-      setAgentTask(await api.agentTask(agentTask.id));
+      const updated = await api.agentTask(id);
+      if (displayedTaskId.current === id) setAgentTask(updated);
     } catch {
       /* 下一次轮询兜底 */
     }
   };
 
   const steps = agentTask?.steps ?? [];
-  const tokens = agentTask ? agentTask.usage.prompt + agentTask.usage.completion : 0;
+  const tokens = agentTask
+    ? agentTask.usage.prompt + agentTask.usage.completion
+    : 0;
 
   return (
     <div className="assistant">
       {mode === "chat" && (
         <aside className="session-pane">
-          <button className="primary new-chat" onClick={newChat} disabled={busy}>
+          <button
+            className="primary new-chat"
+            onClick={newChat}
+            disabled={busy}
+          >
             ＋ 新对话
           </button>
           <div className="session-list">
-            {sessions.length === 0 && <div className="hint" style={{ padding: "8px 12px" }}>还没有历史会话</div>}
+            {sessions.length === 0 && (
+              <div className="hint" style={{ padding: "8px 12px" }}>
+                还没有历史会话
+              </div>
+            )}
             {sessions.map((s) => (
               <div
                 key={s.id}
                 className={`session-item ${s.id === activeId ? "on" : ""}`}
-                onClick={() => openSession(s.id)}
+                role="button"
+                tabIndex={busy ? -1 : 0}
+                aria-disabled={busy}
+                onKeyDown={(e) => {
+                  if (!busy && (e.key === "Enter" || e.key === " ")) {
+                    e.preventDefault();
+                    void openSession(s.id);
+                  }
+                }}
+                onClick={() => {
+                  if (!busy) void openSession(s.id);
+                }}
               >
                 <div className="s-title">{s.title}</div>
                 <div className="s-meta">
-                  {s.message_count} 条 · {s.updated_at.slice(5, 16).replace("T", " ")}
+                  {s.message_count} 条 ·{" "}
+                  {s.updated_at.slice(5, 16).replace("T", " ")}
                 </div>
                 <span
                   className="s-del"
                   title="删除会话"
                   onClick={(e) => {
                     e.stopPropagation();
-                    removeSession(s.id);
+                    if (!busy) void removeSession(s.id);
                   }}
                 >
                   ✕
@@ -360,88 +457,188 @@ export default function Assistant({
           </div>
         </aside>
       )}
-      <div className="chat">
-        <div className="mode-switch">
-          <button className={mode === "qa" ? "on" : ""} onClick={() => setMode("qa")}>文献研究</button>
-          <button className={mode === "chat" ? "on" : ""} onClick={() => { setMode("chat"); setAnchorId(""); }}>
-            对话
+      {mode === "agent" && (
+        <aside
+          className="session-pane task-session-pane"
+          aria-label="Agent 任务历史"
+        >
+          <button
+            className="primary new-chat"
+            onClick={newAgent}
+            disabled={agentBusy}
+          >
+            ＋ 新任务
           </button>
-          <button className={mode === "agent" ? "on" : ""} onClick={() => setMode("agent")}>
-            Agent 任务
-          </button>
-          {mode === "agent" && (
-            <>
-              <span className="hint" style={{ alignSelf: "center", marginLeft: 8 }}>
-                LLM 自主调用工具完成多步任务；批量入库会先请求确认
-              </span>
-              <span className="flex-spacer" />
-              <button className={historyOpen ? "on" : ""} onClick={() => void toggleHistory()}>
-                历史 ▾
+          <div className="history-heading">
+            <span>任务历史</span>
+            <button className="ghost sm" onClick={() => void refreshHistory()}>
+              刷新
+            </button>
+          </div>
+          <div className="session-list">
+            {history.length === 0 && (
+              <p className="hint">
+                提交的任务会保存在这里，可回看目标、步骤和结果。
+              </p>
+            )}
+            {history.map((h) => (
+              <button
+                key={h.id}
+                className={`session-item task-session ${agentTask?.id === h.id ? "on" : ""}`}
+                aria-pressed={agentTask?.id === h.id}
+                onClick={() => void loadHistory(h)}
+              >
+                <span className="s-title" title={h.task}>
+                  {h.task}
+                </span>
+                <span className="s-meta">
+                  {!h.live &&
+                  (h.status === "running" || h.status === "waiting_confirm")
+                    ? "已中断"
+                    : h.status === "done"
+                      ? "已完成"
+                      : h.status === "error"
+                        ? "执行失败"
+                        : h.status === "waiting_confirm"
+                          ? "等待确认"
+                          : "运行中"}{" "}
+                  · {h.step_count} 步
+                </span>
+                <span className="s-meta">
+                  {new Date(h.ts * 1000).toLocaleString("zh-CN", {
+                    month: "2-digit",
+                    day: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
               </button>
+            ))}
+          </div>
+          <p className="history-footnote hint">
+            历史用于回看；服务中断的任务不会自动续跑。
+          </p>
+        </aside>
+      )}
+      <div className="chat">
+        <div className="mode-switch" aria-label="助手工作方式">
+          <button
+            className={mode !== "agent" ? "on" : ""}
+            onClick={() => {
+              if (mode === "agent") setMode("qa");
+            }}
+          >
+            问答与比较
+          </button>
+          <button
+            className={mode === "agent" ? "on" : ""}
+            onClick={() => setMode("agent")}
+          >
+            执行任务
+          </button>
+        </div>
+        <div className="assistant-purpose">
+          {mode === "agent" ? (
+            <>
+              <strong>Agent · 执行一个明确目标</strong>
+              <p>
+                可连续检索、入库、问答或生成方案，逐步展示工具调用。提交后才执行；批量入库达到确认阈值及运行代码前需确认。
+              </p>
+            </>
+          ) : (
+            <>
+              <strong>读取资料，获得解释与依据</strong>
+              <p>
+                问答不会自动添加论文。单次研究可指定论文范围；连续对话用于追问和讨论，默认查询整个文献库。
+              </p>
+              <div className="seg" aria-label="问答方式">
+                <button
+                  className={`seg-item ${mode === "qa" ? "on" : ""}`}
+                  onClick={() => setMode("qa")}
+                >
+                  单次问答与比较
+                </button>
+                <button
+                  className={`seg-item ${mode === "chat" ? "on" : ""}`}
+                  onClick={() => {
+                    setMode("chat");
+                    setAnchorId("");
+                  }}
+                >
+                  连续对话
+                </button>
+              </div>
             </>
           )}
         </div>
-
-        {mode === "agent" && historyOpen && (
-          <div className="agent-history">
-            {history.length === 0 && (
-              <div className="hint" style={{ padding: "10px 28px" }}>
-                还没有任务记录（提交过一次任务后，这里跨会话可回看）
-              </div>
-            )}
-            {history.map((h) => (
-              <div
-                key={`${h.id}-${h.ts}`}
-                className={`agent-hist-item ${agentTask?.id === h.id ? "on" : ""}`}
-                onClick={() => void loadHistory(h)}
-              >
-                <span
-                  className={`hist-badge ${h.status === "done" ? "done" : h.status === "error" ? "error" : "running"}`}
-                >
-                  {h.status === "done" ? "完成" : h.status === "error" ? "失败" : h.status === "waiting_confirm" ? "待确认" : "进行中"}
-                </span>
-                <div className="hi-main">
-                  <div className="hi-task">{h.task}</div>
-                  <div className="hi-meta hint">
-                    {new Date(h.ts * 1000).toLocaleString("zh-CN", {
-                      month: "2-digit",
-                      day: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                    {" · "}
-                    {h.step_count} 步 · 约 {h.usage.prompt + h.usage.completion} tokens
-                    {h.live && (h.status === "running" || h.status === "waiting_confirm") ? " · 进行中" : ""}
-                  </div>
-                </div>
-              </div>
-            ))}
+        {historyError && mode === "agent" && (
+          <div className="assistant-notice err" role="alert">
+            {historyError}
+          </div>
+        )}
+        {mode === "agent" && agentBusy && agentTask?.id !== runningTaskId && (
+          <div className="assistant-notice">
+            另一个任务仍在运行，查看历史不会中止它。
+            <button
+              onClick={() => {
+                if (runningTaskId)
+                  void loadHistory({ id: runningTaskId, live: true });
+              }}
+            >
+              返回运行中的任务
+            </button>
           </div>
         )}
 
-        <div className={`research-container ${mode === "qa" ? "" : "off"}`}><ResearchBoard key={researchScope?.key ?? 0} scope={researchScope ?? null} onOpenDetail={onOpenDetail} /></div>
+        <div className={`research-container ${mode === "qa" ? "" : "off"}`}>
+          <ResearchBoard
+            key={researchScope?.key ?? 0}
+            scope={researchScope ?? null}
+            onOpenDetail={onOpenDetail}
+          />
+        </div>
         {mode === "qa" ? null : mode === "chat" ? (
           <>
             <div className="chat-log" ref={logRef}>
               {turns.map((t, i) => (
                 <div key={i} className={`msg ${t.role}`}>
-                  {t.understanding && <div className="under">（{t.understanding}）</div>}
+                  {t.understanding && (
+                    <div className="under">（{t.understanding}）</div>
+                  )}
                   {t.role === "bot" ? <Markdown text={t.text} /> : t.text}
                   {t.sources && t.sources.length > 0 && (
                     <div className="sources">
                       {t.sources.map((s, j) => (
-                        <div key={j}><div className="src" onClick={() => onOpenDetail(s.paper_id)}>
-                          [{(s.n ?? [j + 1]).join("][")}] {s.title.slice(0, 50)}{s.title.length > 50 ? "…" : ""} · {s.section}
-                          {s.page ? ` · 第${s.page}页` : ""}
-                        </div><Evidence source={s} /></div>
+                        <div key={j}>
+                          <div
+                            className="src"
+                            onClick={() => onOpenDetail(s.paper_id)}
+                          >
+                            [{(s.n ?? [j + 1]).join("][")}]{" "}
+                            {s.title.slice(0, 50)}
+                            {s.title.length > 50 ? "…" : ""} · {s.section}
+                            {s.page ? ` · 第${s.page}页` : ""}
+                          </div>
+                          <Evidence source={s} />
+                        </div>
                       ))}
                     </div>
                   )}
-                  {t.notes && t.notes.length > 0 && t.notes.map((n, j) => <div key={j} className="note">⚠ {n}</div>)}
+                  {t.notes &&
+                    t.notes.length > 0 &&
+                    t.notes.map((n, j) => (
+                      <div key={j} className="note">
+                        ⚠ {n}
+                      </div>
+                    ))}
                   {t.newPapers && t.newPapers.length > 0 && (
                     <div className="papers-mini">
                       {t.newPapers.map((p) => (
-                        <div key={p.source_id} className="paper-mini" onClick={() => onOpenDetail(p.source_id)}>
+                        <div
+                          key={p.source_id}
+                          className="paper-mini"
+                          onClick={() => onOpenDetail(p.source_id)}
+                        >
                           📄 {p.title}
                         </div>
                       ))}
@@ -458,7 +655,11 @@ export default function Assistant({
               )}
             </div>
             <div className="quick">
-              {["库里现在有多少论文？", "不知道该看什么论文", "帮我找 2024 年以后的 LLM agent 综述"].map((s) => (
+              {[
+                "库里现在有多少论文？",
+                "不知道该看什么论文",
+                "请解释库内论文采用的评估方法",
+              ].map((s) => (
                 <span key={s} className="chip" onClick={() => send(s)}>
                   {s}
                 </span>
@@ -470,14 +671,19 @@ export default function Assistant({
             {!agentTask && !agentBusy && (
               <div className="agent-empty">
                 <div className="hint">
-                  描述一个目标，Agent 会自主决定调用哪些工具（检索 / 入库 / 问答 / 状态 / 方向推荐），
+                  例如「查找两篇综述并保存题录，再生成阅读计划」。Agent
+                  会规划检索、入库、问答或方案生成等步骤，
                   每一步工具调用实时可见。批量入库（≥5 篇）会先请求你的确认。
                 </div>
                 <div className="quick" style={{ padding: 0 }}>
                   {AGENT_SAMPLES.map((s) => (
-                    <span key={s} className="chip" onClick={() => runAgent(s)}>
+                    <button
+                      key={s}
+                      className="chip"
+                      onClick={() => setInput(s)}
+                    >
                       {s}
-                    </span>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -490,55 +696,89 @@ export default function Assistant({
                   <div key={i} className="astep">
                     <span className="s-no">{s.step}</span>
                     <span className="s-tool">{s.tool}</span>
-                    <code className="s-args">{JSON.stringify(s.arguments)}</code>
-                    <span className={`s-badge s-${s.status}`}>{STATUS_TEXT[s.status] ?? s.status}</span>
+                    <code className="s-args">
+                      {JSON.stringify(s.arguments)}
+                    </code>
+                    <span className={`s-badge s-${s.status}`}>
+                      {STATUS_TEXT[s.status] ?? s.status}
+                    </span>
                     <span className="s-ms">{s.duration_ms} ms</span>
                     {s.detail && <div className="s-detail">{s.detail}</div>}
-                    {s.comparison?.papers?.length ? <FieldEvidence papers={s.comparison.papers} /> : null}
+                    {s.comparison?.papers?.length ? (
+                      <FieldEvidence papers={s.comparison.papers} />
+                    ) : null}
                   </div>
                 ))}
-                {agentBusy && (
+                {agentBusy && agentTask.id === runningTaskId && (
                   <div className="astep running">
                     <span className="spin" /> 执行中…（每步都会实时显示在这里）
                   </div>
                 )}
 
-                {agentTask.status === "waiting_confirm" && agentTask.pending_confirm && (
-                  <div className="confirm-box">
-                    <div className="c-title">
-                      ⚠{" "}
-                      {agentTask.pending_confirm.titles[0]?.startsWith("运行代码")
-                        ? `Agent 请求运行代码（${agentTask.pending_confirm.count} 项）`
-                        : `Agent 请求入库 ${agentTask.pending_confirm.count} 篇论文`}
+                {agentTask.status === "waiting_confirm" &&
+                  agentTask.pending_confirm && (
+                    <div className="confirm-box">
+                      <div className="c-title">
+                        ⚠{" "}
+                        {agentTask.pending_confirm.titles[0]?.startsWith(
+                          "运行代码",
+                        )
+                          ? `Agent 请求运行代码（${agentTask.pending_confirm.count} 项）`
+                          : `Agent 请求入库 ${agentTask.pending_confirm.count} 篇论文`}
+                      </div>
+                      {agentTask.pending_confirm.titles
+                        .slice(0, 5)
+                        .map((t, i) => (
+                          <div key={i} className="c-item">
+                            · {t}
+                          </div>
+                        ))}
+                      {agentTask.pending_confirm.titles.length > 5 && (
+                        <div className="c-item hint">
+                          …等共 {agentTask.pending_confirm.titles.length} 篇
+                        </div>
+                      )}
+                      <div className="c-actions">
+                        <button
+                          className="primary"
+                          onClick={() => decideConfirm(true)}
+                        >
+                          {agentTask.pending_confirm.titles[0]?.startsWith(
+                            "运行代码",
+                          )
+                            ? "确认运行"
+                            : "确认入库"}
+                        </button>
+                        <button
+                          className="ghost"
+                          onClick={() => decideConfirm(false)}
+                        >
+                          拒绝
+                        </button>
+                      </div>
                     </div>
-                    {agentTask.pending_confirm.titles.slice(0, 5).map((t, i) => (
-                      <div key={i} className="c-item">· {t}</div>
-                    ))}
-                    {agentTask.pending_confirm.titles.length > 5 && (
-                      <div className="c-item hint">…等共 {agentTask.pending_confirm.titles.length} 篇</div>
-                    )}
-                    <div className="c-actions">
-                      <button className="primary" onClick={() => decideConfirm(true)}>
-                        {agentTask.pending_confirm.titles[0]?.startsWith("运行代码") ? "确认运行" : "确认入库"}
-                      </button>
-                      <button className="ghost" onClick={() => decideConfirm(false)}>拒绝</button>
-                    </div>
-                  </div>
-                )}
+                  )}
 
-                {(agentTask.status === "done" || agentTask.status === "error") && (
+                {(agentTask.status === "done" ||
+                  agentTask.status === "error") && (
                   <div className="agent-answer">
                     {agentTask.status === "error" ? (
                       <div className="err">任务失败：{agentTask.error}</div>
                     ) : (
                       <>
                         {agentTask.stopped_reason === "max_steps" && (
-                          <div className="note">⚠ 已达步数上限，以下为基于现有信息的总结</div>
+                          <div className="note">
+                            ⚠ 已达步数上限，以下为基于现有信息的总结
+                          </div>
                         )}
                         {agentTask.stopped_reason === "token_budget" && (
-                          <div className="note">⚠ 已达 token 预算，以下为基于现有信息的总结</div>
+                          <div className="note">
+                            ⚠ 已达 token 预算，以下为基于现有信息的总结
+                          </div>
                         )}
-                        <Markdown text={agentTask.answer || "（模型未返回内容）"} />
+                        <Markdown
+                          text={agentTask.answer || "（模型未返回内容）"}
+                        />
                       </>
                     )}
                     <div className="agent-meta hint">
@@ -552,27 +792,64 @@ export default function Assistant({
         )}
 
         {mode === "agent" && anchorId && (
-          <div className="anchor-hint">⚓ 已锚定论文 {anchorId} —— 检索 / 入库 / 方向推荐类工具将被移除，防止任务漂移</div>
+          <div className="anchor-hint">
+            ⚓ 已锚定论文 {anchorId} —— 检索 / 入库 /
+            方向推荐类工具将被移除，防止任务漂移
+          </div>
         )}
 
-        {mode !== "qa" && <div className="chat-input">
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder={mode === "agent" ? "描述一个任务，Agent 自主规划工具调用…" : "用自然语言说需求…"}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && (mode === "agent" ? runAgent() : send())}
-            autoFocus
-          />
-          <button
-            className="primary"
-            onClick={() => (mode === "agent" ? runAgent() : send())}
-            disabled={(mode === "agent" ? agentBusy : busy) || !input.trim()}
-          >
-            {mode === "agent" ? "运行" : "发送"}
-          </button>
-        </div>}
+        {mode === "chat" && (
+          <div className="chat-handoff">
+            <button className="ghost sm" onClick={onDiscover}>
+              去发现论文
+            </button>
+            <button
+              className="ghost sm"
+              disabled={
+                busy ||
+                agentBusy ||
+                (!input.trim() && !turns.some((t) => t.role === "user"))
+              }
+              onClick={() => {
+                const task =
+                  input.trim() ||
+                  [...turns].reverse().find((t) => t.role === "user")?.text ||
+                  "";
+                setInput(task);
+                setAnchorId("");
+                setMode("agent");
+              }}
+            >
+              将需求转为任务（先预填）
+            </button>
+          </div>
+        )}
+        {mode !== "qa" && (
+          <div className="chat-input">
+            <input
+              ref={inputRef}
+              type="text"
+              placeholder={
+                mode === "agent"
+                  ? "描述要执行的目标，提交后开始…"
+                  : "追问库内论文或讨论研究方向…"
+              }
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) =>
+                e.key === "Enter" && (mode === "agent" ? runAgent() : send())
+              }
+              autoFocus
+            />
+            <button
+              className="primary"
+              onClick={() => (mode === "agent" ? runAgent() : send())}
+              disabled={(mode === "agent" ? agentBusy : busy) || !input.trim()}
+            >
+              {mode === "agent" ? "提交任务" : "发送"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

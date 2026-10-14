@@ -64,6 +64,22 @@ def test_papers_list_filter(monkeypatch, tmp_path):
     assert r.json()["papers"][0]["abstract"] == ""  # 列表不带摘要内容（省流量）
 
 
+def test_local_file_presence_is_not_download_link(monkeypatch, tmp_path):
+    lib = _seed(tmp_path)
+    document = tmp_path / "local.docx"
+    document.write_bytes(b"original fixture")
+    lib.set_status("openalex:W1", "downloaded", pdf_path=str(document))
+    lib.close()
+    client = _client(monkeypatch, tmp_path)
+    rows = {p["source_id"]: p for p in client.get("/api/papers").json()["papers"]}
+    assert rows["openalex:W2"]["has_pdf"] is True
+    assert rows["openalex:W2"]["has_local_file"] is False
+    assert rows["openalex:W1"]["has_local_file"] is True
+    document.unlink()
+    rows = {p["source_id"]: p for p in client.get("/api/papers").json()["papers"]}
+    assert rows["openalex:W1"]["has_local_file"] is False
+
+
 def test_paper_detail_404_and_full(monkeypatch, tmp_path):
     lib = _seed(tmp_path)
     lib.close()
@@ -294,12 +310,14 @@ def test_chat_endpoint_persists_session(monkeypatch, tmp_path):
 
     def _capture(msg, **kwargs):
         seen["history"] = kwargs.get("history")
+        seen["allow_ingest"] = kwargs.get("allow_ingest")
         return _Reply()
 
     monkeypatch.setattr(rt, "handle_message", _capture)
     r2 = client.post("/api/chat", json={"message": "详细说说", "session_id": sid})
     assert r2.json()["session_id"] == sid
     assert seen["history"] and seen["history"][0] == ("看看状态", "库里有 2 篇")
+    assert seen["allow_ingest"] is False
 
     # 不存在的会话 → 404；删除后历史消失
     assert client.post("/api/chat", json={"message": "x", "session_id": "nope"}).status_code == 404

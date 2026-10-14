@@ -290,11 +290,24 @@ p {
   background: var(--bg);
 }
 .library-view .lib-filter {
-  flex-direction: column-reverse;
+  flex-direction: column;
   align-items: stretch;
   padding: 0 0 16px;
-  gap: 20px;
+  gap: 8px;
   border: 0;
+}
+.library-view .lib-filter > .filter-label {
+  order: 0;
+}
+.library-view .lib-filter > .seg {
+  order: 1;
+}
+.library-view .lib-filter > .stage-explanation {
+  order: 2;
+}
+.library-view .lib-filter > .library-filter-row {
+  order: 3;
+  margin-top: 12px;
 }
 .library-view .lib-filter > .seg {
   border-bottom: 1px solid var(--border);
@@ -583,8 +596,106 @@ table.papers .paper-title:hover {
   background: transparent;
 }
 .assistant .session-pane {
-  width: 210px;
+  width: 224px;
+  min-height: 0;
   background: transparent;
+}
+.assistant-purpose {
+  padding: 0 28px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.assistant-purpose strong {
+  font-size: 14px;
+}
+.assistant-purpose p {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.7;
+  margin: 8px 0 12px;
+}
+.history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 12px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.workspace .task-session {
+  display: block;
+  width: 100%;
+  text-align: left;
+  min-height: 88px;
+  padding: 12px;
+  background: transparent;
+}
+.task-session .s-title {
+  display: block;
+  font-weight: 500;
+}
+.task-session .s-meta {
+  display: block;
+}
+.history-footnote {
+  padding: 12px;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.assistant-notice {
+  margin: 12px 28px 0;
+  font-size: 12px;
+}
+.assistant-notice button {
+  margin-left: 10px;
+}
+.chat-handoff {
+  display: flex;
+  gap: 8px;
+  padding: 0 28px 10px;
+}
+.filter-label {
+  display: block;
+  margin: 14px 0 8px;
+  font-size: 11px;
+}
+.stage-explanation {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+  margin: 12px 0 0;
+  max-width: 900px;
+}
+.file-state {
+  font-size: 12px;
+}
+.file-state small {
+  display: block;
+  font-size: 10px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.delete-confirm {
+  max-width: 620px;
+}
+.delete-confirm .modal-body {
+  line-height: 1.7;
+}
+.delete-confirm h2 {
+  font-size: 18px;
+  margin: 0;
+}
+.delete-confirm li {
+  margin: 8px 0;
+}
+.workspace .danger {
+  color: var(--red);
+  border-color: var(--red);
+  background: transparent;
+}
+.workspace .danger:hover:not(:disabled) {
+  background: var(--panel-2);
 }
 .research-board {
   overflow-y: auto;

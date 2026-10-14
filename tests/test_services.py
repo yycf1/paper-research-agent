@@ -148,8 +148,7 @@ def test_handle_message_search_returns_new_papers(tmp_path, monkeypatch):
             asst, "classify_intent",
             lambda text, **k: _route("search", search={"topics": ["gnn survey"], "year_from": 2020, "max_results": 5}),
         )
-        rec = lib.upsert_paper(_paper("openalex:W1", "Paper One"))
-        from paper_agent.library import PaperRecord
+        lib.upsert_paper(_paper("openalex:W1", "Paper One"))
 
         record = lib.get("openalex:W1")
 
@@ -167,6 +166,23 @@ def test_handle_message_search_returns_new_papers(tmp_path, monkeypatch):
         assert "新入库 1 篇" in reply.reply
         assert "3 条候选" in reply.reply
         assert len(reply.new_papers) == 1
+    finally:
+        lib.close()
+
+
+def test_readonly_chat_redirects_search_without_ingest(tmp_path, monkeypatch):
+    lib = Library(tmp_path / "lib.db")
+    try:
+        monkeypatch.setattr(asst, "classify_intent", lambda text, **kw: _route("search"))
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Web 对话不得执行检索入库")
+
+        monkeypatch.setattr(asst, "search_and_ingest", forbidden)
+        reply = asst.handle_message("找几篇论文入库", lib=lib, retriever=_FakeRetriever(),
+                                    params={}, cfg=_cfg(), allow_ingest=False)
+        assert reply.intent == "search" and "执行任务" in reply.reply
+        assert not reply.new_papers and lib.counts() == {}
     finally:
         lib.close()
 

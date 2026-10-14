@@ -7,7 +7,7 @@ const output = path.resolve(process.env.WEB_QA_OUTPUT || 'data/web-qa');
 fs.mkdirSync(output, { recursive: true });
 const base = process.env.WEB_QA_URL || 'http://127.0.0.1:18809';
 const titles = ['Evidence-aware Research Question Answering', 'Graph Learning with Explicit Evaluation Protocols', 'Vision Models: A Local Reading Example'];
-function paper(n) { return { source_id: `local:demo-${n}`, source: 'local', title: titles[n - 1] || 'Newly Discovered Research Example', authors: ['原创界面示例'], year: 2024 + n % 2, doi: null, citations: null, has_pdf: true, landing_page: null, status: n === 3 ? 'parsed' : 'indexed', error: null, added_at: '2026-10-14T10:00:00', tag: n === 3 ? '视觉研究' : '检索与智能体', abstract: '原创离线界面示例，仅用于验证交互。' }; }
+function paper(n) { return { source_id: `local:demo-${n}`, source: 'local', title: titles[n - 1] || 'Newly Discovered Research Example', authors: ['原创界面示例'], year: 2024 + n % 2, doi: null, citations: null, has_pdf: true, has_local_file: n === 1 || n === 3, landing_page: null, status: n === 4 ? 'discovered' : n === 3 ? 'parsed' : 'indexed', error: null, added_at: '2026-10-14T10:00:00', tag: n === 3 ? '视觉研究' : '检索与智能体', abstract: '原创离线界面示例，仅用于验证交互。' }; }
 function fields(p) {
   const fact = (field, value) => ({ field, raw_value: value, normalized_value: value, citation_status: 'valid', support_status: 'unverified', claim_sha256: `fixture-${p.source_id}-${field}`, issues: [], review: null, evidence: [{ paper_id: p.source_id, chunk_id: `${p.source_id}::0`, section: '4 Experiments', page: 3, quote: 'Synthetic-A uses a fixed test split; Recall@10 is reported as a ratio.' }] });
   return { schema_version: 1, paper_id: p.source_id, source_version: 'original-offline-fixture', fields: { research_goal: [fact('research_goal', '研究带证据的文献问答')], datasets: [fact('datasets', { name: 'Synthetic-A', split: 'fixed test split' })], metrics: [fact('metrics', { name: 'Recall@10', value: '0.5', task: 'retrieval', dataset: 'Synthetic-A', split: 'fixed test split', definition: 'recall at 10', unit: 'ratio', evaluation_protocol: 'full candidate set', model: 'Demo' })] }, omitted: {}, unmatched_reviews: 0, load_issues: [], numeric_comparison: { ranking_allowed: false, reason: '条件仍需核对' } };
@@ -23,6 +23,7 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { value: { writeText: async text => { window.__copiedAnswer = text; } } }); });
       let papers = [paper(1), paper(2), paper(3)];
       let pending = true;
+      let submitted = null, submittedPending = true, failDeleteOnce = true;
       page.on('pageerror', error => errors.push({ profile, error: String(error) }));
       await page.route('**/*', async route => {
         const request = route.request(), url = new URL(request.url());
@@ -34,7 +35,7 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
         requests.push({ profile, path: name, method, body });
         const respond = (data, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
         const task = { id: 'waiting-demo', task: '确认后执行一个示例操作', status: pending ? 'waiting_confirm' : 'done', steps: [], step_count: 0, pending_confirm: pending ? { count: 1, titles: ['示例操作：仅测试确认界面'] } : null, answer: pending ? '' : '已拒绝示例操作。', stopped_reason: 'final', usage: { prompt: 0, completion: 0 }, error: '', allowed_paper_ids: ['local:demo-1'], live: true, ts: 1791964800 };
-        if (name === '/status') return respond({ version: 'demo', total: papers.length, counts: { indexed: 2, parsed: 1 }, vector_chunks: 6 });
+        if (name === '/status') return respond({ version: 'demo', total: papers.length, counts: papers.reduce((counts, p) => ({ ...counts, [p.status]: (counts[p.status] || 0) + 1 }), {}), vector_chunks: 6 });
         if (name === '/settings') return respond({ base_url: 'https://example.invalid/v1', model: 'offline-fixture', api_key_masked: '', has_key: true, theme: 'light' });
         if (name === '/tags') return respond({ tags: [{ name: '检索与智能体', count: 2 }, { name: '视觉研究', count: 1 }], sources: { local: papers.length }, untagged: 0 });
         if (name === '/papers' && method === 'GET') {
@@ -43,7 +44,12 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
           return respond({ papers: selected, total: selected.length });
         }
         if (name === '/sessions') return respond({ sessions: [] });
-        if (name === '/agent/tasks' && method === 'GET') return respond({ tasks: [task] });
+        const submittedTask = submitted && { ...task, id: 'submitted-demo', task: submitted, status: submittedPending ? 'waiting_confirm' : 'done', pending_confirm: submittedPending ? { count: 1, titles: ['离线示例操作'] } : null, answer: submittedPending ? '' : '测试任务确认已拒绝。' };
+        if (name === '/agent/tasks' && method === 'GET') return respond({ tasks: submittedTask ? [submittedTask, task] : [task] });
+        if (name === '/agent/tasks' && method === 'POST') { submitted = body.task; return respond({ ...task, id: 'submitted-demo', task: submitted, status: 'running', pending_confirm: null, answer: '' }); }
+        if (name === '/agent/tasks/submitted-demo/events') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'data: ' + JSON.stringify({ type: 'snapshot', ...submittedTask }) + '\n\n' });
+        if (name === '/agent/tasks/submitted-demo/confirm') { assert.equal(body.approve, false); submittedPending = false; return respond({ ok: true }); }
+        if (name === '/agent/tasks/submitted-demo') return respond(submittedTask);
         if (name === '/agent/tasks/waiting-demo/confirm') { assert.equal(body.approve, false); pending = false; return respond({ ok: true }); }
         if (name === '/agent/tasks/waiting-demo') return respond(task);
         if (name === '/jobs') return respond({ jobs: [{ id: 'process-demo', kind: 'process_paper', status: 'done', result: { source_id: 'local:demo-3', final_status: 'parsed', stages: [{ stage: 'report', label: '生成精读报告', status: 'failed', detail: '离线失败场景示例' }] }, error: '' }] });
@@ -61,6 +67,11 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
           const sid = name.split('/')[2], p = papers.find(p => p.source_id === sid);
           if (name.endsWith('/plan')) return respond({ detail: '模拟模型服务暂不可用' }, 503);
           if (!p) return respond({ detail: 'Not found' }, 404);
+          if (method === 'DELETE') {
+            if (sid === 'local:demo-2' && failDeleteOnce) { failDeleteOnce = false; return respond({ detail: '原创离线删除失败场景' }, 503); }
+            papers = papers.filter(row => row.source_id !== sid);
+            return respond({ ok: true, source_id: sid });
+          }
           if (name.endsWith('/facts')) return respond(fields(p));
           if (name.endsWith('/repro')) return respond({ source_id: sid, files: [], runs: [] });
           if (method === 'GET') return respond(detail(p));
@@ -80,6 +91,11 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       checks.push({ profile, view: 'keyboard-groups', textEntryPreserved: true });
       await page.screenshot({ path: path.join(output, `library-${profile}.png`), fullPage: true });
       await noOverflow('library');
+      const linkedOnly = page.locator('.library-view tr').filter({ has: page.getByRole('button', { name: titles[1], exact: true }) });
+      await linkedOnly.getByText('未保存', { exact: true }).waitFor();
+      await linkedOnly.getByText('有来源链接', { exact: true }).waitFor();
+      assert.equal(await page.locator('.library-view').getByText('处理阶段（全库数量，非分组）', { exact: true }).isVisible(), true);
+      checks.push({ profile, view: 'file-versus-link', localFileDistinct: true });
       await page.locator('.library-view .lib-q').fill('unmatched-fixture');
       await page.getByText('没有符合筛选条件的论文', { exact: true }).waitFor();
       await page.locator('.library-view .lib-q').fill('');
@@ -139,6 +155,68 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       await nav('发现论文').click(); await page.goBack();
       await page.getByRole('heading', { name: titles[0], exact: true }).waitFor();
       checks.push({ profile, view: 'deep-link-back', restored: true });
+
+      await nav('研究助手').click();
+      await page.getByRole('button', { name: '执行任务', exact: true }).click();
+      const historyPane = page.getByRole('complementary', { name: 'Agent 任务历史' });
+      await historyPane.getByRole('button', { name: /确认后执行一个示例操作/ }).click();
+      await page.locator('.agent-answer').getByText('已拒绝示例操作。', { exact: true }).waitFor();
+      const paneBox = await historyPane.boundingBox(), chatBox = await page.locator('.assistant .chat').boundingBox();
+      assert.ok(paneBox.x + paneBox.width <= chatBox.x + 1);
+      await noOverflow('agent-history-left');
+      await page.screenshot({ path: path.join(output, `agent-history-${profile}.png`), fullPage: true });
+      await historyPane.getByRole('button', { name: '＋ 新任务', exact: true }).click();
+      await page.getByPlaceholder('描述要执行的目标，提交后开始…').fill('离线提交的目标');
+      await page.getByRole('button', { name: '提交任务', exact: true }).click();
+      await page.locator('.assistant .confirm-box').waitFor();
+      await historyPane.getByRole('button', { name: /确认后执行一个示例操作/ }).click();
+      await page.locator('.agent-answer').getByText('已拒绝示例操作。', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '返回运行中的任务', exact: true }).waitFor();
+      assert.equal(await historyPane.getByRole('button', { name: '＋ 新任务', exact: true }).isDisabled(), true);
+      await page.waitForTimeout(1500); // Allow the SSE fallback poll to arrive while viewing history.
+      assert.equal(await page.locator('.agent-answer').getByText('已拒绝示例操作。', { exact: true }).isVisible(), true);
+      await page.getByRole('button', { name: '返回运行中的任务', exact: true }).click();
+      await page.getByRole('button', { name: '拒绝', exact: true }).click();
+      await page.getByText('测试任务确认已拒绝。', { exact: true }).waitFor();
+      await historyPane.getByRole('button', { name: '＋ 新任务', exact: true }).click();
+      checks.push({ profile, view: 'running-task-history', historyDoesNotInterrupt: true });
+
+      await page.getByRole('button', { name: '问答与比较', exact: true }).click();
+      await page.getByRole('button', { name: '连续对话', exact: true }).click();
+      await page.getByPlaceholder('追问库内论文或讨论研究方向…').fill('查找两篇综述并保存题录');
+      const submitsBeforeHandoff = requests.filter(r => r.method === 'POST' && r.path === '/agent/tasks').length;
+      await page.getByRole('button', { name: '将需求转为任务（先预填）', exact: true }).click();
+      assert.equal(await page.getByPlaceholder('描述要执行的目标，提交后开始…').inputValue(), '查找两篇综述并保存题录');
+      assert.equal(requests.filter(r => r.method === 'POST' && r.path === '/agent/tasks').length, submitsBeforeHandoff);
+      checks.push({ profile, view: 'chat-task-handoff', prefillOnly: true });
+
+      await nav('文献库').click();
+      await page.getByRole('checkbox', { name: `选择 ${titles[0]}`, exact: true }).check();
+      await page.getByRole('checkbox', { name: `选择 ${titles[1]}`, exact: true }).check();
+      await page.locator('.library-view .lib-q').fill('Vision Models');
+      await page.getByRole('button', { name: titles[0], exact: true }).waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: '删除所选论文', exact: true }).click();
+      const deletion = page.getByRole('dialog', { name: '删除所选 2 篇论文？' });
+      await deletion.getByText(titles[0], { exact: true }).waitFor();
+      await deletion.getByText(titles[1], { exact: true }).waitFor();
+      const deletesBeforeCancel = requests.filter(r => r.method === 'DELETE').length;
+      await deletion.getByRole('button', { name: '取消', exact: true }).click();
+      assert.equal(requests.filter(r => r.method === 'DELETE').length, deletesBeforeCancel);
+      checks.push({ profile, view: 'bulk-delete-cancel', hiddenSelectionVisible: true, noMutation: true });
+      await page.locator('.library-view .lib-q').fill('');
+      await page.getByRole('button', { name: titles[0], exact: true }).waitFor();
+      await page.getByRole('button', { name: '删除所选论文', exact: true }).click();
+      await page.getByRole('button', { name: '确认删除', exact: true }).click();
+      await page.getByText('已删除 1 篇；1 篇未删除，已保留勾选，可重试。', { exact: false }).waitFor();
+      await page.getByRole('button', { name: titles[0], exact: true }).waitFor({ state: 'hidden' });
+      assert.equal(await page.getByRole('checkbox', { name: `选择 ${titles[1]}`, exact: true }).isChecked(), true);
+      checks.push({ profile, view: 'bulk-delete-partial', failedSelectionRetained: true });
+      await page.getByRole('button', { name: '删除所选论文', exact: true }).click();
+      await page.getByRole('button', { name: '确认删除', exact: true }).click();
+      await page.getByRole('button', { name: titles[1], exact: true }).waitFor({ state: 'hidden' });
+      await page.getByRole('button', { name: titles[2], exact: true }).waitFor();
+      assert.equal(papers.length, 2);
+      checks.push({ profile, view: 'bulk-delete-retry', unselectedRetained: true });
       await context.close();
     }
   } finally { await browser.close(); fs.writeFileSync(path.join(output, 'validation.json'), JSON.stringify({ fixture: 'original synthetic offline UI responses', realModelCalls: 0, errors, checks, requests }, null, 2)); }

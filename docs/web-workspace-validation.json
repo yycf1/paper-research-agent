@@ -8,8 +8,8 @@
   "fixture": "original synthetic offline UI responses",
   "real_model_calls": 0,
   "python": {
-    "passed": 364,
-    "seconds": 127.69,
+    "passed": 366,
+    "seconds": 132.58,
     "warnings": 1
   },
   "frontend": {
@@ -31,6 +31,11 @@
     },
     {
       "profile": "desktop",
+      "view": "file-versus-link",
+      "localFileDistinct": true
+    },
+    {
+      "profile": "desktop",
       "view": "comparison",
       "overflow": false
     },
@@ -73,6 +78,37 @@
       "profile": "desktop",
       "view": "deep-link-back",
       "restored": true
+    },
+    {
+      "profile": "desktop",
+      "view": "agent-history-left",
+      "overflow": false
+    },
+    {
+      "profile": "desktop",
+      "view": "running-task-history",
+      "historyDoesNotInterrupt": true
+    },
+    {
+      "profile": "desktop",
+      "view": "chat-task-handoff",
+      "prefillOnly": true
+    },
+    {
+      "profile": "desktop",
+      "view": "bulk-delete-cancel",
+      "hiddenSelectionVisible": true,
+      "noMutation": true
+    },
+    {
+      "profile": "desktop",
+      "view": "bulk-delete-partial",
+      "failedSelectionRetained": true
+    },
+    {
+      "profile": "desktop",
+      "view": "bulk-delete-retry",
+      "unselectedRetained": true
     },
     {
       "profile": "desktop-1280",
@@ -86,6 +122,11 @@
     },
     {
       "profile": "desktop-1280",
+      "view": "file-versus-link",
+      "localFileDistinct": true
+    },
+    {
+      "profile": "desktop-1280",
       "view": "comparison",
       "overflow": false
     },
@@ -128,6 +169,37 @@
       "profile": "desktop-1280",
       "view": "deep-link-back",
       "restored": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "agent-history-left",
+      "overflow": false
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "running-task-history",
+      "historyDoesNotInterrupt": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "chat-task-handoff",
+      "prefillOnly": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "bulk-delete-cancel",
+      "hiddenSelectionVisible": true,
+      "noMutation": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "bulk-delete-partial",
+      "failedSelectionRetained": true
+    },
+    {
+      "profile": "desktop-1280",
+      "view": "bulk-delete-retry",
+      "unselectedRetained": true
     }
   ],
   "scope_requests": [
@@ -191,5 +263,6 @@
     "No real model semantic quality assessment",
     "Ordinary process history remains in memory",
     "No container sandbox or cross-process index transaction"
-  ]
+  ],
+  "personal_papers_deleted": 0
 }
