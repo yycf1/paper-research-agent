@@ -23,7 +23,7 @@ from paper_agent.extraction.experiment_flow import extract_experiment
 from paper_agent.extraction.report import EmptyReportError, generate_report
 from paper_agent.library import Library
 from paper_agent.llm import chat, parse_json_reply
-from paper_agent.parsing import extract_markdown
+from paper_agent.parsing import extract_markdown, readable_chars
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import chunk_abstract, split_markdown
 from paper_agent.rag.vectorstore import VectorStore
@@ -31,9 +31,11 @@ from paper_agent.services.versions import (
     EXPERIMENT_CONTRACT,
     REPORT_CONTRACT,
     artifact_current,
+    file_digest,
     index_current,
     index_metadata,
     knowledge_current,
+    parser_contract,
     save_artifact,
 )
 from paper_agent.sources import SourceUnavailable
@@ -250,6 +252,11 @@ def run_parse(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
     """解析所有 downloaded 状态论文为分节 Markdown；失败回退 downloaded 并记 error。"""
     counts = {"parsed": 0, "parse_failed": 0}
     notes: list[str] = []
+    for rec in lib.list(status="parsed") + lib.list(status="analyzed") + lib.list(status="indexed"):
+        raw_path = Path(rec.pdf_path) if rec.pdf_path else None
+        parsed_path = paths.parsed_dir(cfg) / safe_dirname(rec.paper.source_id) / "full_text.md"
+        if raw_path and raw_path.exists() and not artifact_current(parsed_path, file_digest(raw_path), cfg, parser_contract()):
+            lib.set_status(rec.paper.source_id, "downloaded", error="原文或解析版本变化，重新解析")
     for rec in lib.list(status="downloaded"):
         sid, p = rec.paper.source_id, rec.paper
         if not rec.pdf_path:
@@ -265,13 +272,13 @@ def run_parse(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
             notes.append(f"{p.title[:36]}… 解析失败：{str(exc)[:60]}")
             continue
         min_chars = 30 if str(pdf_path).lower().endswith(".docx") else 200
-        if len(md.strip()) < min_chars:
+        if readable_chars(md) < min_chars:
             lib.set_status(sid, "downloaded", error="解析结果近乎为空（可能是扫描版 PDF）")
             counts["parse_failed"] += 1
             continue
         out = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(md, encoding="utf-8")
+        save_artifact(out, md, file_digest(pdf_path), cfg, parser_contract())
         lib.set_status(sid, "parsed", error=None)
         counts["parsed"] += 1
     return counts, notes

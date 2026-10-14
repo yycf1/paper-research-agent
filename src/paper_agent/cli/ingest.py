@@ -27,7 +27,7 @@ from paper_agent.download import DownloadError, download_pdf, safe_dirname
 from paper_agent.extraction.experiment_flow import extract_experiment
 from paper_agent.extraction.report import EmptyReportError, generate_report
 from paper_agent.llm import chat
-from paper_agent.parsing import extract_markdown
+from paper_agent.parsing import extract_markdown, readable_chars
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import chunk_abstract, split_markdown
 from paper_agent.rag.vectorstore import VectorStore
@@ -36,9 +36,11 @@ from paper_agent.services.versions import (
     EXPERIMENT_CONTRACT,
     REPORT_CONTRACT,
     artifact_current,
+    file_digest,
     index_current,
     index_metadata,
     knowledge_current,
+    parser_contract,
     save_artifact,
 )
 
@@ -325,14 +327,14 @@ def parse(
                 continue
             # 空结果守卫仅针对 PDF（扫描版常见）；DOCX 无 OCR 问题，短文档也放行
             min_chars = 30 if rec.pdf_path.lower().endswith(".docx") else 200
-            if len(md.strip()) < min_chars:
+            if readable_chars(md) < min_chars:
                 lib.set_status(sid, "downloaded", error="解析结果近乎为空（可能是扫描版 PDF）")
                 console.print(f"{FAIL} [dim]{sid}[/dim] {p.title[:36]}…：解析结果近乎为空")
                 fail += 1
                 continue
             out = _parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
             out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(md, encoding="utf-8")
+            save_artifact(out, md, file_digest(Path(rec.pdf_path)), cfg, parser_contract())
             sections = md.count("\n## ")
             lib.set_status(sid, "parsed", error=None)
             console.print(f"{OK} [dim]{sid}[/dim] {p.title[:36]}…（{len(md)} 字符，{sections} 节）")
@@ -390,7 +392,7 @@ def analyze(
                 try:
                     md = extract_markdown(rec.pdf_path)
                     parsed_path.parent.mkdir(parents=True, exist_ok=True)
-                    parsed_path.write_text(md, encoding="utf-8")
+                    save_artifact(parsed_path, md, file_digest(Path(rec.pdf_path)), cfg, parser_contract())
                     lib.set_status(sid, "parsed")
                 except Exception as exc:
                     console.print(f"{FAIL} [dim]{sid}[/dim] 自动解析失败：{exc}")

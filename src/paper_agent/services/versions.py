@@ -10,8 +10,22 @@ from pathlib import Path
 
 from paper_agent.rag import splitter
 
-EXPERIMENT_CONTRACT = "experiment-v1"
-REPORT_CONTRACT = "report-v1"
+EXPERIMENT_CONTRACT = "experiment-v2-segments"
+REPORT_CONTRACT = "report-v2-segments"
+
+
+def parser_contract() -> str:
+    from paper_agent.parsing.pdf import MAX_PAGES
+
+    return f"parse-v2-appendix-{MAX_PAGES}"
+
+
+def file_digest(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as stream:
+        while block := stream.read(1024 * 1024):
+            hasher.update(block)
+    return hasher.hexdigest()
 
 
 def digest(value) -> str:
@@ -25,7 +39,8 @@ def model_identity(cfg: dict, kind: str) -> dict:
 
 
 def artifact_input(markdown: str, cfg: dict, contract: str) -> str:
-    return digest({"source": digest(markdown), "model": model_identity(cfg, "llm"), "contract": contract})
+    model = None if contract.startswith("parse-") else model_identity(cfg, "llm")
+    return digest({"source": digest(markdown), "model": model, "contract": contract})
 
 
 def artifact_current(path: Path, markdown: str, cfg: dict, contract: str) -> bool:

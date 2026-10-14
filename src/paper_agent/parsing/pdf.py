@@ -1,12 +1,13 @@
 """PDF → 分节 Markdown（PyMuPDF 基线）。
 
 策略：逐页取文本（sort=True 近似阅读顺序），行级启发式识别章节标题，
-遇到 References/Bibliography 即截断（剥离参考文献）。双栏论文与公式的
+跳过 References/Bibliography 区域，遇到明确附录标题恢复。双栏论文与公式的
 精细还原不在基线范围内——效果不够时按 PLAN.md 引入 MinerU 升级。
 """
 
 from __future__ import annotations
 
+import json
 import re
 
 import pymupdf
@@ -24,12 +25,17 @@ _KW_HEADING_RE = re.compile(
 )
 # 弱信号：编号标题（"2. Methods"、"3.1 Dataset"），限长限词数压低正文误报
 _NUMBERED_RE = re.compile(r"^\s*(\d+(\.\d+)*\.?)\s+(\S.*)$")
-_REFS_START_RE = re.compile(r"^\s*(references|bibliography)\s*[.:：]?\s*$", re.IGNORECASE)
+_REFS_START_RE = re.compile(r"^\s*(?:\d+[.]?\s+)?(references|bibliography|参考文献)\s*[.:：]?\s*$", re.IGNORECASE)
+_APPENDIX_RE = re.compile(
+    r"^\s*(?:appendix(?:\s+[A-Z0-9])?(?:\s*[:.：-]?\s+.{1,100})?|appendices|"
+    r"supplementary (?:material|information)(?:\s*[:.：-]?\s+.{1,100})?|附录.{0,80}|"
+    r"[A-Z][.]?\s+(?:additional|implementation|proofs?|supplementary|experimental)\b.{0,90})\s*$", re.I,
+)
 
 
 def is_heading(line: str) -> bool:
     line = line.rstrip()
-    if _KW_HEADING_RE.match(line):
+    if _KW_HEADING_RE.match(line) or _APPENDIX_RE.match(line):
         return True
     m = _NUMBERED_RE.match(line)
     if m:
@@ -52,6 +58,7 @@ def extract_markdown(pdf_path, *, strip_references: bool = True) -> str:
     try:
         out: list[str] = []
         refs_started = False
+        appendix_resumed = False
         for page_no, page in enumerate(doc, start=1):
             if page_no > MAX_PAGES:
                 out.append(f"<!-- 第 {page_no} 页起超出解析上限，已截断 -->")
@@ -66,16 +73,22 @@ def extract_markdown(pdf_path, *, strip_references: bool = True) -> str:
                     refs_started = True
                     out.append(f"## {line.strip(' ..:：')}")
                     out.append("<!-- 参考文献已剥离 -->")
-                    break
-                if refs_started:
                     continue
+                if refs_started:
+                    if _APPENDIX_RE.match(line):
+                        refs_started = False
+                        appendix_resumed = True
+                    else:
+                        continue
                 if is_heading(line):
                     out.append(f"## {line.strip()}")
                 else:
                     out.append(line)
-            if refs_started:
-                break
             out.append("")
+        coverage = {"total_pages": len(doc), "processed_pages": min(len(doc), MAX_PAGES),
+                    "page_limit": MAX_PAGES, "truncated": len(doc) > MAX_PAGES,
+                    "references_stripped": strip_references, "appendix_resumed": appendix_resumed}
+        out.insert(0, "<!-- parse-coverage: " + json.dumps(coverage, ensure_ascii=False) + " -->")
         return "\n".join(out).strip() + "\n"
     finally:
         doc.close()

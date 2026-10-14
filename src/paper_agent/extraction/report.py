@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 
+from paper_agent.extraction.coverage import add_usage, coverage_note, document_windows
 from paper_agent.llm import chat
 
 MAX_INPUT_CHARS = 36_000
@@ -77,5 +79,33 @@ def generate_report(markdown: str, *, chat_fn=chat) -> tuple[str, dict]:
     空回复防护见 chat_markdown_safe——绝不把空报告写盘后还把状态推进到
     analyzed（M11 前的真实缺陷）。
     """
-    messages = [{"role": "user", "content": _PROMPT.format(paper_text=markdown[:MAX_INPUT_CHARS])}]
-    return chat_markdown_safe(messages, max_tokens=2048, temperature=0.3, chat_fn=chat_fn)
+    windows, coverage = document_windows(markdown, segment_chars=MAX_INPUT_CHARS)
+    if not windows:
+        raise ValueError("解析文本为空，不能生成报告")
+    usage = {}
+    if len(windows) == 1:
+        report, usage = chat_markdown_safe(
+            [{"role": "user", "content": _PROMPT.format(paper_text=windows[0]["text"])}],
+            max_tokens=2048, temperature=0.3, chat_fn=chat_fn)
+    else:
+        notes = []
+        for i, window in enumerate(windows, 1):
+            note, used = chat_markdown_safe([{"role": "user", "content": (
+                f"这是论文分段 {i}，字符范围 {window['start']}~{window['end']}，不是全文。"
+                "提取本段的研究目标、方法、实验设置、数据划分、指标数值、结果、局限和资产链接；"
+                "保留章节、页码标记和数字，未提及的字段留空，不据本段缺失断言全文缺失。\n"
+                + window["text"]
+            )}], max_tokens=1536, temperature=0.1, chat_fn=chat_fn)
+            if len(note) > 6000:
+                coverage.setdefault("note_truncated_segments", []).append(i)
+            notes.append(f"分段 {i}（{window['start']}~{window['end']}）：\n{note[:6000]}")
+            usage = add_usage(usage, used)
+        prompt = _PROMPT.format(paper_text="\n\n".join(notes)) + (
+            "\n以上是带范围的分段笔记，综合时保留来源范围，不补写未覆盖的事实；"
+            "分段冲突明确说明，不能自行选择更好看的数字。\n" + coverage_note(coverage))
+        report, used = chat_markdown_safe([{"role": "user", "content": prompt}],
+                                          max_tokens=2048, temperature=0.2, chat_fn=chat_fn)
+        usage = add_usage(usage, used)
+    report += "\n> " + coverage_note(coverage) + "\n"
+    report += "\n<!-- analysis-coverage: " + json.dumps(coverage, ensure_ascii=False) + " -->\n"
+    return report, usage

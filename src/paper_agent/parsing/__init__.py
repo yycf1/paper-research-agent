@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from paper_agent.parsing import docx as _docx
 from paper_agent.parsing import pdf as _pdf
 
 SUPPORTED_SUFFIXES = {".pdf", ".docx"}
+
+
+def readable_chars(markdown: str) -> int:
+    """Coverage comments and page anchors are not extracted body text."""
+    return len(re.sub(r"<!--.*?-->", "", markdown, flags=re.DOTALL).strip())
 
 
 def extract_markdown(path: str | Path, *, strip_references: bool = True) -> str:

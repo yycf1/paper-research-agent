@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+import json
 import re
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 
+from paper_agent.extraction.coverage import add_usage, document_windows
 from paper_agent.llm import chat, parse_json_reply
 
 MAX_INPUT_CHARS = 36_000  # 超长论文截断（DeepSeek-V3 上下文足够，主要控成本）
@@ -66,7 +68,8 @@ def _strip_trailing_punct(urls: list[str]) -> list[str]:
 
 def extract_repro_urls(text: str) -> dict[str, list[str]]:
     """正则确定性提取复现资产链接（LLM 结果的兜底与校验）。"""
-    seen = lambda urls: list(dict.fromkeys(_strip_trailing_punct(urls)))
+    def seen(urls):
+        return list(dict.fromkeys(_strip_trailing_punct(urls)))
     return {
         "code_url": seen(_CODE_URL_RE.findall(text)),
         "dataset_urls": seen(_DATA_URL_RE.findall(text)),
@@ -121,13 +124,13 @@ _REASK_INSTRUCTION = (
 )
 
 
-def extract_experiment(markdown: str, *, chat_fn=chat) -> dict:
+def _extract_segment(markdown: str, *, chat_fn=chat) -> dict:
     """从解析文本提取 experiment.json；解析失败/空回复时带上下文重问一次。
 
     chat_fn 可注入便于离线测试。
     """
-    paper_text = markdown[:MAX_INPUT_CHARS]
-    prompt = _PROMPT.format(paper_text=paper_text)
+    paper_text = markdown
+    prompt = "输入可能只是论文的一个分段。未提及仅指当前输入，不能断言全文缺失。\n" + _PROMPT.format(paper_text=paper_text)
     reply, usage = chat_fn(
         [{"role": "user", "content": prompt}],
         max_tokens=4096,
@@ -155,3 +158,66 @@ def extract_experiment(markdown: str, *, chat_fn=chat) -> dict:
         except ValueError:
             raise ValueError(f"重问后仍无法解析 JSON（首次错误：{exc}）") from exc
     return normalize_experiment(data, paper_text=paper_text, usage=usage)
+
+
+def _meaningful(value):
+    if isinstance(value, dict):
+        return any(_meaningful(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_meaningful(v) for v in value)
+    return value is not None and value != ""
+
+
+def extract_experiment(markdown: str, *, chat_fn=chat) -> dict:
+    windows, coverage = document_windows(markdown, segment_chars=MAX_INPUT_CHARS)
+    if not windows:
+        raise ValueError("解析文本为空，不能提取实验结构")
+    results = [_extract_segment(w["text"], chat_fn=chat_fn) for w in windows]
+    merged = dict(results[0])
+    usage = {}
+    conflicts = []
+    for result in results:
+        usage = add_usage(usage, result.get("token_usage", {}))
+    for field in _FIELDS:
+        values = [r[field] for r in results if _meaningful(r.get(field))]
+        unique = list({json.dumps(v, ensure_ascii=False, sort_keys=True): v for v in values}.values())
+        if not unique:
+            continue
+        if all(isinstance(v, list) for v in unique):
+            merged[field] = list({json.dumps(item, ensure_ascii=False, sort_keys=True): item
+                                  for value in unique for item in value}.values())
+        elif len(unique) == 1:
+            merged[field] = unique[0]
+        elif all(isinstance(v, dict) for v in unique):
+            combined = {}
+            for value in unique:
+                for key, item in value.items():
+                    if not _meaningful(item):
+                        continue
+                    if key not in combined:
+                        combined[key] = item
+                    elif isinstance(item, list) and isinstance(combined[key], list):
+                        combined[key] = list({json.dumps(v, ensure_ascii=False, sort_keys=True): v
+                                              for v in combined[key] + item}.values())
+                    elif combined[key] != item:
+                        conflicts.append(f"分段 {field}.{key} 存在冲突，主字段暂保留首个候选，需核对原文")
+                        merged.setdefault("confidence", {})[field] = "low"
+            merged[field] = combined
+        elif field in {"main_results", "conclusions", "reproducibility_notes"} and all(isinstance(v, str) for v in unique):
+            merged[field] = "\n".join(f"分段候选 {i}：{v}" for i, v in enumerate(unique, 1))
+            merged.setdefault("confidence", {})[field] = "low"
+        else:
+            conflicts.append(f"分段 {field} 存在多个候选或冲突，需结合原文核对；主字段暂保留首个候选")
+            merged[field] = unique[0]
+            merged.setdefault("confidence", {})[field] = "low"
+    assets = {key: list(dict.fromkeys(url for result in results for url in result["repro_assets"].get(key, [])))
+              for key in ("code_url", "dataset_urls", "project_page")}
+    merged["repro_assets"] = merge_repro_assets(assets, extract_repro_urls(markdown))
+    merged["unverified_claims"] = list(dict.fromkeys(
+        [c for r in results for c in r.get("unverified_claims", [])] + conflicts))
+    merged["token_usage"] = usage
+    merged["coverage"] = coverage
+    if len(results) > 1:
+        merged["segment_candidates"] = [{"range": coverage["ranges"][i], "fields": {k: r[k] for k in _FIELDS}}
+                                         for i, r in enumerate(results)]
+    return merged
