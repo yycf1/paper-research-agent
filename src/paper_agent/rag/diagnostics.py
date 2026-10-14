@@ -277,6 +277,12 @@ def diagnose_case(
             row["failure_stage"] = "invalid_citation_number"
         elif row["failure_stage"] is None and case.get("should_answer") is True and not refs:
             row["failure_stage"] = "citation_missing"
+        runtime_check = trace.get("citation_check")
+        if isinstance(runtime_check, dict) and runtime_check.get("status") == "failed":
+            row["citation_check"] = runtime_check
+            if row["failure_stage"] in {None, "citation_missing"}:
+                row["failure_stage"] = "invalid_citation_number" if runtime_check.get("invalid_numbers") or runtime_check.get("malformed_range") else "citation_missing"
+    row["answer_status"] = trace.get("answer_status")
     row["automatic_failure_stage"] = row["failure_stage"]
     _apply_case_review(row, review)
     return row

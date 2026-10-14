@@ -485,21 +485,32 @@ def api_upload_paper(
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     paper_id: str | None = None
+    paper_ids: list[str] | None = Field(None, min_length=1, max_length=6)
     k: int = Field(8, ge=1, le=20)
 
 
 @router.post("/ask")
-def api_ask(req: AskRequest) -> dict:
+def api_ask(req: AskRequest, lib: Library = Depends(open_lib)) -> dict:
+    from paper_agent.agent.scope import PaperScope
+
+    try:
+        ids = PaperScope(lib).query_ids(req.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    scope = {"paper_ids": list(ids)} if ids is not None else {}
     retriever = _retriever()
     if retriever.store.count() == 0:
         raise HTTPException(400, "向量库为空：先检索并处理论文建立索引")
+    trace = {}
     try:
         answer, hits = answer_question(
-            req.question, retriever=retriever, k=req.k, paper_id=req.paper_id
+            req.question, retriever=retriever, k=req.k, trace=trace, **scope
         )
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
-    return {"answer": answer, "sources": sources_from_hits(hits)}
+    return {"answer": answer, "sources": sources_from_hits(hits),
+            "answer_status": trace.get("answer_status"), "citation_check": trace.get("citation_check"),
+            "retrieval_notes": trace.get("retrieval", {}).get("notes", [])}
 
 
 class ChatRequest(BaseModel):

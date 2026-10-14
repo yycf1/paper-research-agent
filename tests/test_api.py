@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 
 from paper_agent.library import Library
 from paper_agent.models import Paper
-from paper_agent.server.app import create_app
 from paper_agent.server import routes as rt
+from paper_agent.server.app import create_app
 
 
 def _paper(sid: str, title: str, *, doi=None) -> Paper:
@@ -203,6 +203,25 @@ def test_ask_endpoint(monkeypatch, tmp_path):
     assert data["answer"].startswith("答案")
     assert len(data["sources"]) == 1  # 同论文同章节收敛
     assert data["sources"][0]["paper_id"] == "openalex:W1"
+
+
+def test_ask_multiple_papers_and_answer_metadata(monkeypatch, tmp_path):
+    _seed(tmp_path).close()
+    client = _client(monkeypatch, tmp_path)
+
+    def answer(question, *, retriever, k, trace, paper_ids):
+        assert paper_ids == ["openalex:W1", "openalex:W2"]
+        trace.update(answer_status="no_hits", citation_check=None,
+                     retrieval={"notes": ["向量检索不可用，本次降级为 BM25 关键词检索。"]})
+        return "本次未召回", []
+
+    monkeypatch.setattr(rt, "answer_question", answer)
+    response = client.post("/api/ask", json={"question": "methods", "paper_ids": ["W1", "W2"]})
+    assert response.status_code == 200
+    assert response.json()["answer_status"] == "no_hits"
+    assert response.json()["retrieval_notes"]
+    assert client.post("/api/ask", json={"question": "q", "paper_ids": []}).status_code == 422
+    assert client.post("/api/ask", json={"question": "q", "paper_id": "W1", "paper_ids": ["W2"]}).status_code == 400
 
 
 def test_chat_endpoint(monkeypatch, tmp_path):

@@ -81,7 +81,7 @@ def test_default_ask_and_compare_use_host_scope(context, monkeypatch):
     retriever = SimpleNamespace(store=SimpleNamespace(count=lambda: 3), retrieve=retrieve)
     ex = ToolExecutor(lib=lib, cfg=cfg, retriever=retriever, allowed_paper_ids=["W1", "W2"])
 
-    def answer(question, *, retriever, paper_ids):
+    def answer(question, *, retriever, paper_ids, trace):
         assert paper_ids == ["openalex:W1", "openalex:W2"]
         return "graph [1]", []
 

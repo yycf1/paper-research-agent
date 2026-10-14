@@ -13,6 +13,7 @@ import time
 
 from paper_agent.config import load_config
 from paper_agent.llm import chat
+from paper_agent.rag.citations import check_citations
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.hybrid import bm25, fuse
 from paper_agent.rag.reranker import rerank
@@ -225,7 +226,15 @@ def answer_question(
             hits = retriever.retrieve(query, k=k, **scope, trace=trace.setdefault("retrieval", {}))
     check_hits(hits, scope)
     if not hits:
-        return finish("向量库还没有内容：请先运行 `pa index` 建立索引。", [], "no_hits")
+        count = getattr(retriever.store, "count", None)
+        if callable(count) and count() == 0:
+            return finish("向量库还没有内容：请先运行 `pa index` 建立索引。", [], "empty_index")
+        if (paper_id is not None or paper_ids is not None) and callable(getattr(retriever.store, "all_hits", None)):
+            scoped = retriever.store.all_hits(**scope)
+            check_hits(scoped, scope)
+            if not scoped:
+                return finish("所选论文尚无可检索的索引块，请先处理或索引这些论文。", [], "scope_unindexed")
+        return finish("本次查询未召回相关片段；可调整关键词或检查资料范围，不能据此判断原文没有答案。", [], "no_hits")
     threshold = retriever.cfg.get("retrieval", {}).get("min_rerank_score", 0.1)
     if all(h.relevance_score is not None for h in hits) and max(h.relevance_score for h in hits) < threshold:
         return finish("论文库中的内容未提及：检索到的证据相关性不足，无法可靠回答。", [], "low_evidence")
@@ -255,7 +264,33 @@ def answer_question(
                 answer = reviewed
         except Exception:
             pass  # 复核失败保留安全拒答，不把可用回复升级为服务错误
-    answer = answer.strip() or "论文库中的内容未提及：模型未返回有效回答，请重试。"
+    answer = answer.strip()
+    if not answer:
+        return finish("模型未返回有效回答，请重试。", hits, "empty_response")
+    checks = []
+    check = check_citations(answer, len(hits))
+    checks.append({"answer": answer, "check": check})
+    if check["status"] == "failed":
+        # One bounded repair using exactly the same evidence. Never invent a replacement number.
+        repair_messages = messages + [{"role": "assistant", "content": answer}, {"role": "user", "content": (
+            f"引用结构校验失败：{check}。仅可引用上方 1~{len(hits)} 号片段。"
+            "请依据相同片段重新回答，关键结论标注 [编号]；不要机械替换编号。"
+            "证据不足则以「论文库中的内容未提及」开头说明限制。只返回修正后的答案。"
+        )}]
+        try:
+            if trace is not None:
+                trace["phase"] = "citation_repair"
+            repaired, _usage = chat_fn(repair_messages, max_tokens=2048, temperature=0.0)
+            if repaired.strip():
+                answer = repaired.strip()
+                check = check_citations(answer, len(hits))
+                checks.append({"answer": answer, "check": check})
+        except Exception:
+            pass
+    if trace is not None:
+        trace.update(citation_check=check, citation_attempts=checks)
+    if check["status"] == "failed":
+        return finish("回答引用校验未通过，暂不能提供可追溯的答案；请查看检索片段或重试。", hits, "citation_invalid")
     if retriever.notes:
         answer += "\n\n> " + " ".join(retriever.notes)
-    return finish(answer, hits, "generated")
+    return finish(answer, hits, "refused" if check["refusal_prefix"] else "generated")

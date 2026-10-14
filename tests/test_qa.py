@@ -91,7 +91,8 @@ def test_answer_question_empty_hits_hint() -> None:
     retriever = Retriever(FakeStore([]), embed_fn=lambda texts: [[0.0] for _ in texts])
     answer, hits = answer_question("问题", retriever=retriever, chat_fn=FakeChat("x"))
     assert hits == []
-    assert "pa index" in answer
+    assert "未召回" in answer
+    assert "向量库还没有内容" not in answer
 
 
 def test_sources_from_hits_align_citation_numbers() -> None:

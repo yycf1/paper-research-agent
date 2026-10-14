@@ -288,12 +288,12 @@ class ToolExecutor:
         scope = {"paper_ids": list(ids)} if ids is not None else {}
         if self._retriever is None or self._retriever.store.count() == 0:
             return {"answer": "向量库为空，无法回答库内问题（可先 search_papers 检索相关论文）。",
-                    "sources": [], "empty_index": True}
-        try:
-            answer, hits = answer_question(question, retriever=self._retriever, **scope)
-        except RuntimeError as exc:  # 缺 Key / 限流退避无效等配置或可用性问题
-            return {"answer": f"问答链暂时不可用：{exc}", "sources": [], "error": True}
-        return {"answer": answer, "sources": sources_from_hits(hits)}
+                    "sources": [], "empty_index": True, "answer_status": "empty_index"}
+        trace = {}
+        answer, hits = answer_question(question, retriever=self._retriever, trace=trace, **scope)
+        return {"answer": answer, "sources": sources_from_hits(hits),
+                "answer_status": trace.get("answer_status"), "citation_check": trace.get("citation_check"),
+                "retrieval_notes": trace.get("retrieval", {}).get("notes", [])}
 
     def _tool_status(self, _args: dict) -> dict:
         if self._scope.allowed is None:
