@@ -1,21 +1,23 @@
 """Chroma 向量库封装：本地持久化 + 按论文整体覆盖的增量索引。
 
-增量语义：一篇论文的块集合视为一个版本——重建索引时先按 paper_id 删旧
-再插新，保证重复执行幂等；块 id 形如 `{paper_id}::{chunk_index}`。
+增量语义：一篇论文的块集合视为一个版本——校验后覆盖，删除多余尾块，
+失败时恢复旧块；本进程读写互斥。块 id 形如 `{paper_id}::{chunk_index}`。
 """
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 
 from paper_agent.rag.scope import where_scope
 
 # Chroma publishes a process-wide system before its native bindings finish starting.
 # Concurrent first requests must not obtain that partially initialized system.
 _CLIENT_INIT_LOCK = Lock()
+_STORE_LOCKS: dict[str, RLock] = {}
 
 
 @dataclass
@@ -30,6 +32,9 @@ class Hit:
     distance: float
     chunk_id: str = ""
     relevance_score: float | None = None
+    source_sha256: str = ""
+    mode: str = ""
+    embedding_fingerprint: str = ""
 
 
 class VectorStore:
@@ -50,6 +55,7 @@ class VectorStore:
             except ValueError:
                 pass  # 不同盘符时保持原路径；可在配置中指定 ASCII 数据目录
         with _CLIENT_INIT_LOCK:
+            self._lock = _STORE_LOCKS.setdefault(str(path.resolve()), RLock())
             self.client = chromadb.PersistentClient(path=storage_path)
             self.collection = self.client.get_or_create_collection(
                 "papers", metadata={"hnsw:space": "cosine"}
@@ -65,20 +71,57 @@ class VectorStore:
         embeddings: list[list[float]],
     ) -> int:
         """覆盖式写入一篇论文的全部块，返回写入条数。"""
-        self.remove_paper(paper_id)
         if not texts:
             return 0
+        if not (len(texts) == len(metadatas) == len(embeddings)):
+            raise ValueError("索引文本、元数据和向量数量不一致")
+        dimension = len(embeddings[0])
+        if not dimension or any(len(v) != dimension or any(not math.isfinite(x) for x in v) for v in embeddings):
+            raise ValueError("向量维度不一致或包含非有限值")
+        if any(m.get("paper_id") != paper_id for m in metadatas):
+            raise ValueError("索引块的论文 ID 不一致")
         ids = [f"{paper_id}::{i}" for i in range(len(texts))]
-        self.collection.add(
-            ids=ids,
-            documents=texts,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
+        with self._lock:
+            old = self.collection.get(where={"paper_id": {"$eq": paper_id}},
+                                      include=["documents", "metadatas", "embeddings"])
+            try:
+                self.collection.upsert(ids=ids, documents=texts, metadatas=metadatas, embeddings=embeddings)
+                obsolete = [cid for cid in old["ids"] if cid not in ids]
+                if obsolete:
+                    self.collection.delete(ids=obsolete)
+            except Exception:
+                # Restore the previous generation before releasing process-local readers.
+                try:
+                    if old["ids"]:
+                        self.collection.upsert(ids=old["ids"], documents=old["documents"],
+                                               metadatas=old["metadatas"], embeddings=old["embeddings"])
+                    added = [cid for cid in ids if cid not in old["ids"]]
+                    if added:
+                        self.collection.delete(ids=added)
+                except Exception as rollback_error:
+                    raise RuntimeError("索引更新及回滚失败，需检查或重建索引") from rollback_error
+                raise
         return len(ids)
 
+    def index_current(self, paper_id: str, signature: str, expected: int) -> bool:
+        with self._lock:
+            rows = self.collection.get(where={"paper_id": {"$eq": paper_id}}, include=["metadatas"])
+        return len(rows["ids"]) == expected and all(
+            m.get("index_fingerprint") == signature and m.get("expected_chunks") == expected
+            for m in rows["metadatas"]
+        )
+
+    def embedding_state(self, signature: str, **scope) -> str:
+        with self._lock:
+            rows = self.collection.get(where=where_scope(**scope), include=["metadatas"])
+        signatures = {m.get("embedding_fingerprint") for m in rows["metadatas"]}
+        if signatures - {signature, None}:
+            return "mismatch"
+        return "legacy" if None in signatures else "current"
+
     def remove_paper(self, paper_id: str) -> None:
-        self.collection.delete(where={"paper_id": {"$eq": paper_id}})
+        with self._lock:
+            self.collection.delete(where={"paper_id": {"$eq": paper_id}})
 
     def count(self) -> int:
         return self.collection.count()
@@ -100,14 +143,17 @@ class VectorStore:
 
     def all_hits(self, *, paper_id: str | None = None, paper_ids: list[str] | None = None) -> list[Hit]:
         """BM25 与向量索引共享同一份块，删除/重建无需同步第二份索引。"""
-        rows = self.collection.get(
-            where=where_scope(paper_id, paper_ids),
-            include=["documents", "metadatas"],
-        )
+        with self._lock:
+            rows = self.collection.get(
+                where=where_scope(paper_id, paper_ids),
+                include=["documents", "metadatas"],
+            )
         return [Hit(
             paper_id=m.get("paper_id", ""), title=m.get("title", ""),
             section=m.get("section", ""), page=int(m.get("page", 0)),
             text=doc, distance=1.0, chunk_id=cid,
+            source_sha256=m.get("source_sha256", ""), mode=m.get("mode", ""),
+            embedding_fingerprint=m.get("embedding_fingerprint", ""),
         ) for cid, doc, m in zip(rows["ids"], rows["documents"], rows["metadatas"])]
 
     def query(
@@ -120,12 +166,13 @@ class VectorStore:
     ) -> list[Hit]:
         """按向量取 top-k；paper_id 限定范围时在该论文内检索。"""
         where = where_scope(paper_id, paper_ids)
-        res = self.collection.query(
-            query_embeddings=[embedding],
-            n_results=k,
-            where=where,
-            include=["documents", "metadatas", "distances"],
-        )
+        with self._lock:
+            res = self.collection.query(
+                query_embeddings=[embedding],
+                n_results=k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
         hits: list[Hit] = []
         for cid, doc, meta, dist in zip(
             res["ids"][0], res["documents"][0], res["metadatas"][0], res["distances"][0]
@@ -139,6 +186,8 @@ class VectorStore:
                     text=doc,
                     distance=float(dist),
                     chunk_id=cid,
+                    source_sha256=meta.get("source_sha256", ""), mode=meta.get("mode", ""),
+                    embedding_fingerprint=meta.get("embedding_fingerprint", ""),
                 )
             )
         return hits

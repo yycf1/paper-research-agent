@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 import time
 
+from paper_agent import paths
 from paper_agent.config import load_config
+from paper_agent.download import safe_dirname
 from paper_agent.llm import chat
 from paper_agent.rag.citations import check_citations
 from paper_agent.rag.embedder import embed
@@ -20,6 +22,7 @@ from paper_agent.rag.reranker import rerank
 from paper_agent.rag.scope import check_hits, query_scope
 from paper_agent.rag.tracing import capture_stage, hit_record
 from paper_agent.rag.vectorstore import Hit, VectorStore
+from paper_agent.services.versions import digest, model_identity
 
 MAX_HISTORY_TURNS = 3
 
@@ -56,6 +59,12 @@ class Retriever:
         mode = options.get("mode") or ("hybrid" if hybrid else "vector")
         if mode not in {"vector", "bm25", "hybrid"}:
             raise ValueError(f"Unsupported retrieval mode: {mode}")
+        if mode != "bm25" and callable(getattr(self.store, "embedding_state", None)):
+            state = self.store.embedding_state(digest(model_identity(self.cfg, "embedding")), **scope)
+            if state == "mismatch":
+                raise RuntimeError("当前嵌入配置与所选索引版本不一致，请重新索引；维度变化需使用新的向量目录")
+            if state == "legacy":
+                self.notes.append("部分索引尚未登记嵌入版本，建议重新索引后核对结果。")
         depth = max(k, int(options.get("candidate_k", 20))) if mode != "vector" else k
         if trace is not None:
             trace.clear()
@@ -108,11 +117,28 @@ class Retriever:
                 self.notes.append("重排序服务不可用，本次使用召回融合排序。")
                 logging.getLogger(__name__).warning("Reranker fallback: %s", type(exc).__name__)
         check_hits(hits, scope)
+        self.check_sources(hits)
         capture_stage(trace, "final", hits[:k])
         if trace is not None:
             trace["notes"] = list(self.notes)
             trace["timings_ms"]["total"] = round((time.perf_counter() - started) * 1000, 3)
         return hits[:k]
+
+    def check_sources(self, hits: list[Hit]) -> None:
+        checked = {}
+        for hit in hits:
+            embedding_signature = getattr(hit, "embedding_fingerprint", "")
+            if (embedding_signature and self.cfg.get("retrieval", {}).get("mode") != "bm25"
+                    and embedding_signature != digest(model_identity(self.cfg, "embedding"))):
+                raise RuntimeError("检索块的嵌入版本与当前配置不一致，请重新索引")
+            signature = getattr(hit, "source_sha256", "")
+            if not signature or getattr(hit, "mode", "") != "fulltext":
+                continue
+            if hit.paper_id not in checked:
+                path = paths.parsed_dir(self.cfg) / safe_dirname(hit.paper_id) / "full_text.md"
+                checked[hit.paper_id] = digest(path.read_text(encoding="utf-8")) if path.exists() else None
+            if checked[hit.paper_id] != signature:
+                raise RuntimeError("检索索引与当前解析文本不一致，请重新处理或索引所选论文")
 
 
 def build_context(hits: list[Hit]) -> str:
@@ -225,6 +251,8 @@ def answer_question(
             trace["retrieval_query"] = query
             hits = retriever.retrieve(query, k=k, **scope, trace=trace.setdefault("retrieval", {}))
     check_hits(hits, scope)
+    if callable(getattr(retriever, "check_sources", None)):
+        retriever.check_sources(hits)
     if not hits:
         count = getattr(retriever.store, "count", None)
         if callable(count) and count() == 0:

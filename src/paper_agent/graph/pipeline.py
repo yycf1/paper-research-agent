@@ -27,6 +27,15 @@ from paper_agent.parsing import extract_markdown
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import chunk_abstract, split_markdown
 from paper_agent.rag.vectorstore import VectorStore
+from paper_agent.services.versions import (
+    EXPERIMENT_CONTRACT,
+    REPORT_CONTRACT,
+    artifact_current,
+    index_current,
+    index_metadata,
+    knowledge_current,
+    save_artifact,
+)
 from paper_agent.sources import SourceUnavailable
 from paper_agent.sources import arxiv as arxiv_src
 from paper_agent.sources import europepmc as epmc_src
@@ -298,7 +307,13 @@ def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
     targets = lib.list(status="parsed")
     repaired_status = {}
     for rec in lib.list(status="analyzed") + lib.list(status="indexed"):
-        if _report_is_bad(cfg, rec.paper.source_id):
+        sid = rec.paper.source_id
+        md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
+        markdown = md_path.read_text(encoding="utf-8") if md_path.exists() else ""
+        if markdown and not artifact_current(_knowledge_dir_for(cfg, sid) / "experiment.json", markdown, cfg, EXPERIMENT_CONTRACT):
+            lib.set_status(sid, "parsed", error="知识版本过期或未登记")
+            targets.append(lib.get(sid))
+        elif _report_is_bad(cfg, sid) or (markdown and not artifact_current(_knowledge_dir_for(cfg, sid) / "report.md", markdown, cfg, REPORT_CONTRACT)):
             targets.append(rec)
             repaired_status[rec.paper.source_id] = rec.status
             notes.append(f"{rec.paper.source_id} 报告缺失/为空，本轮仅重生成报告")
@@ -322,7 +337,7 @@ def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
             experiment = None
             if sid in repaired_status:
                 exp_path = _knowledge_dir_for(cfg, sid) / "experiment.json"
-                if exp_path.exists():
+                if artifact_current(exp_path, markdown, cfg, EXPERIMENT_CONTRACT):
                     try:
                         loaded = json.loads(exp_path.read_text(encoding="utf-8"))
                         if isinstance(loaded, dict) and loaded.get("token_usage"):
@@ -350,10 +365,9 @@ def run_analyze(lib: Library, cfg: dict) -> tuple[dict, list[str]]:
             continue
         out_dir = _knowledge_dir_for(cfg, sid)
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "experiment.json").write_text(
-            json.dumps(experiment, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        (out_dir / "report.md").write_text(report, encoding="utf-8")
+        save_artifact(out_dir / "experiment.json", json.dumps(experiment, ensure_ascii=False, indent=2),
+                      markdown, cfg, EXPERIMENT_CONTRACT)
+        save_artifact(out_dir / "report.md", report, markdown, cfg, REPORT_CONTRACT)
         tokens = (
             experiment["token_usage"]["prompt"] + experiment["token_usage"]["completion"]
             + report_usage["prompt"] + report_usage["completion"]
@@ -380,24 +394,33 @@ def run_index(lib: Library, cfg: dict, *, selected: list[str]) -> tuple[dict, li
     counts = {"indexed": 0, "index_chunks": 0, "abstract_indexed": 0}
     notes: list[str] = []
     store = VectorStore(paths.vector_dir(cfg))
-    existing = store.paper_modes()
-    for rec in lib.list(status="parsed") + lib.list(status="analyzed"):
+    for rec in lib.list(status="parsed") + lib.list(status="analyzed") + lib.list(status="indexed"):
         sid, p = rec.paper.source_id, rec.paper
-        if existing.get(sid) == "fulltext":
-            if rec.status == "analyzed":
-                # 先索引后分析的时序：向量库已有全文，这里补推进生命周期状态
-                lib.set_status(sid, "indexed", error=None)
-            continue
         md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
         if not md_path.exists():
             continue
-        chunks = split_markdown(md_path.read_text(encoding="utf-8"), sid, p.title)
+        markdown = md_path.read_text(encoding="utf-8")
+        if rec.status in {"analyzed", "indexed"} and not knowledge_current(_knowledge_dir_for(cfg, sid), markdown, cfg):
+            lib.set_status(sid, "parsed", error="知识产物过期或版本未登记，索引不代表分析已完成")
+            rec = lib.get(sid)
+        chunks = split_markdown(markdown, sid, p.title)
         if not chunks:
+            if rec.status == "indexed":
+                lib.set_status(sid, "analyzed", error="分块为空，索引不可用")
             notes.append(f"{sid} 分块为空，跳过")
             continue
-        vectors = embed([c.text for c in chunks])
-        metas = [{**c.metadata, "mode": "fulltext"} for c in chunks]
-        store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
+        metas = index_metadata(markdown, chunks, cfg, "fulltext")
+        if index_current(store, sid, metas):
+            if rec.status == "analyzed":
+                lib.set_status(sid, "indexed", error=None)
+            continue
+        try:
+            vectors = embed([c.text for c in chunks], cfg=cfg)
+            store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
+        except Exception as exc:
+            lib.set_status(sid, "analyzed" if rec.status == "indexed" else rec.status, error=f"索引失败：{exc}"[:500])
+            notes.append(f"{sid} 索引失败：{str(exc)[:120]}")
+            continue
         counts["indexed"] += 1
         counts["index_chunks"] += len(chunks)
         if rec.status == "analyzed":
@@ -405,13 +428,15 @@ def run_index(lib: Library, cfg: dict, *, selected: list[str]) -> tuple[dict, li
     # 本轮选中但无全文的：摘要单块入库，不改状态机
     for sid in selected:
         rec = lib.get(sid)
-        if rec is None or rec.status != "discovered" or existing.get(sid) == "abstract":
+        if rec is None or rec.status != "discovered":
             continue
         if not rec.paper.abstract.strip():
             continue
         chunks = chunk_abstract(sid, rec.paper.title, rec.paper.abstract)
-        vectors = embed([c.text for c in chunks])
-        metas = [{**c.metadata, "mode": "abstract"} for c in chunks]
+        metas = index_metadata(rec.paper.abstract, chunks, cfg, "abstract")
+        if index_current(store, sid, metas):
+            continue
+        vectors = embed([c.text for c in chunks], cfg=cfg)
         store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
         counts["abstract_indexed"] += 1
     return counts, notes

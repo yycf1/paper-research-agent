@@ -7,6 +7,11 @@ import pytest
 from paper_agent.graph import pipeline as pl
 from paper_agent.library import Library
 from paper_agent.models import Paper
+from paper_agent.services.versions import (
+    EXPERIMENT_CONTRACT,
+    REPORT_CONTRACT,
+    save_artifact,
+)
 
 
 def _paper(sid: str, title: str, *, citations=None, year=None, pdf_urls=(), doi=None):
@@ -33,6 +38,8 @@ def _cfg(tmp_path):
 def _make_fake_store(state):
     """带跨阶段持久化的 fake 向量库：模拟 Chroma 的已有内容查询。"""
 
+    state.setdefault("metas", {})
+
     class _FakeStore:
         def __init__(self, *_a, **_k):
             pass
@@ -40,16 +47,22 @@ def _make_fake_store(state):
         def paper_modes(self):
             return dict(state["modes"])
 
+        def index_current(self, sid, signature, expected):
+            metas = state["metas"].get(sid, [])
+            return len(metas) == expected and all(m.get("index_fingerprint") == signature for m in metas)
+
         def upsert_paper_chunks(self, paper_id, texts, metas, embeddings):
             self.remove_paper(paper_id)
             if texts:
                 state["chunks"][paper_id] = list(texts)
                 state["modes"][paper_id] = metas[0].get("mode", "")
+                state["metas"][paper_id] = metas
             return len(texts)
 
         def remove_paper(self, paper_id):
             state["chunks"].pop(paper_id, None)
             state["modes"].pop(paper_id, None)
+            state["metas"].pop(paper_id, None)
 
     return _FakeStore
 
@@ -99,7 +112,7 @@ def fake_io(monkeypatch, tmp_path):
         pl, "generate_report",
         lambda markdown, chat_fn=None: ("# 一句话总结\n\n这份报告内容完整，远超空报告阈值。" * 2, {"prompt": 10, "completion": 5}),
     )
-    monkeypatch.setattr(pl, "embed", lambda texts: [[0.0] * 4 for _ in texts])
+    monkeypatch.setattr(pl, "embed", lambda texts, **kw: [[0.0] * 4 for _ in texts])
     monkeypatch.setattr(pl, "VectorStore", _make_fake_store(store_state))
     monkeypatch.setattr(pl, "load_config", lambda: cfg)
     return cfg, papers, store_state
@@ -224,7 +237,13 @@ def test_index_advances_already_indexed_analyzed(fake_io, tmp_path):
     try:
         lib.upsert_paper(_paper("openalex:W1", "Paper One", citations=100, year=2022))
         lib.set_status("openalex:W1", "parsed")
-        store_state["modes"]["openalex:W1"] = "fulltext"  # 之前 pa index 已入库
+        md = tmp_path / "data" / "parsed" / "openalex_W1" / "full_text.md"
+        md.parent.mkdir(parents=True, exist_ok=True)
+        md.write_text("## Method\ngraph attention", encoding="utf-8")
+        pl.run_index(lib, cfg, selected=[])  # 先建立具有内容版本的索引
+        kd = tmp_path / "data" / "knowledge" / "openalex_W1"
+        save_artifact(kd / "experiment.json", "{}", md.read_text(encoding="utf-8"), cfg, EXPERIMENT_CONTRACT)
+        save_artifact(kd / "report.md", "report", md.read_text(encoding="utf-8"), cfg, REPORT_CONTRACT)
         lib.set_status("openalex:W1", "analyzed")  # 用户随后单独跑了 pa analyze
         counts, _notes = pl.run_index(lib, cfg, selected=[])
         assert counts["indexed"] == 0  # 不重复索引
@@ -333,9 +352,9 @@ def test_analyze_repairs_empty_report_preserves_status(fake_io, monkeypatch, tmp
             kd = tmp_path / "data" / "knowledge" / sid.replace(":", "_")
             kd.mkdir(parents=True, exist_ok=True)
             (kd / "report.md").write_text("\n", encoding="utf-8")  # 历史空报告
-            (kd / "experiment.json").write_text(
+            save_artifact(kd / "experiment.json",
                 _json.dumps({"research_goal": "g", "token_usage": {"prompt": 1, "completion": 1}}),
-                encoding="utf-8",
+                "正文内容。" * 100, cfg, EXPERIMENT_CONTRACT,
             )
             pd = tmp_path / "data" / "parsed" / sid.replace(":", "_")
             pd.mkdir(parents=True, exist_ok=True)

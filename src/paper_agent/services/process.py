@@ -7,7 +7,7 @@ M18 重构（处理透明化）：阶段结构化为 stages 列表（含 running
 与耗时），progress 回调在每次状态变化时被调用——API 层把它接到 job.result 的
 原地更新上，前端轮询立刻可见。旧版把步骤攒在内存里最后一次性返回，两个 LLM
 调用的一两分钟里界面只能转圈。实验结构与精读报告拆为两个独立阶段，且
-experiment.json 支持产物级复用（mtime 比对）：报告失败重试不重复提取结构。
+experiment.json 支持产物级复用（内容与契约摘要）：报告失败重试不重复提取有效结构。
 """
 
 from __future__ import annotations
@@ -27,6 +27,14 @@ from paper_agent.parsing import extract_markdown
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import split_markdown
 from paper_agent.rag.vectorstore import VectorStore
+from paper_agent.services.versions import (
+    EXPERIMENT_CONTRACT,
+    REPORT_CONTRACT,
+    artifact_current,
+    index_current,
+    index_metadata,
+    save_artifact,
+)
 
 STAGE_LABELS = {
     "download": "下载全文",
@@ -118,6 +126,14 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
 
     # 3+4. 知识提取：实验结构与精读报告拆为两个阶段，各自失败各自停
     rec = lib.get(sid)
+    md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
+    out_dir = paths.knowledge_dir(cfg) / safe_dirname(sid)
+    if rec.status in ("analyzed", "indexed") and md_path.exists():
+        markdown = md_path.read_text(encoding="utf-8")
+        if not (artifact_current(out_dir / "experiment.json", markdown, cfg, EXPERIMENT_CONTRACT)
+                and artifact_current(out_dir / "report.md", markdown, cfg, REPORT_CONTRACT)):
+            lib.set_status(sid, "parsed", error="知识产物过期或版本未登记，需重新分析")
+            rec = lib.get(sid)
     if rec.status == "parsed":
         md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
         markdown = md_path.read_text(encoding="utf-8")
@@ -125,7 +141,7 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
 
         st = _stage("experiment")
         exp_path = out_dir / "experiment.json"
-        if exp_path.exists() and exp_path.stat().st_mtime >= md_path.stat().st_mtime:
+        if artifact_current(exp_path, markdown, cfg, EXPERIMENT_CONTRACT):
             # 产物级复用：上次结构提取成功而报告失败时，重试不重复花这份 token
             experiment = json.loads(exp_path.read_text(encoding="utf-8"))
             _end(st, "skipped", "复用上次提取结果（未过期）")
@@ -138,9 +154,8 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
                 out["final_status"] = "parsed"
                 return out
             out_dir.mkdir(parents=True, exist_ok=True)
-            exp_path.write_text(
-                json.dumps(experiment, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            save_artifact(exp_path, json.dumps(experiment, ensure_ascii=False, indent=2),
+                          markdown, cfg, EXPERIMENT_CONTRACT)
             _end(st, "ok", "experiment.json")
 
         st = _stage("report")
@@ -152,7 +167,7 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
             out["final_status"] = "parsed"
             return out
         out_dir.mkdir(parents=True, exist_ok=True)
-        (out_dir / "report.md").write_text(report, encoding="utf-8")
+        save_artifact(out_dir / "report.md", report, markdown, cfg, REPORT_CONTRACT)
         lib.set_status(sid, "analyzed", error=None)
         _end(st, "ok", "report.md")
     else:
@@ -166,18 +181,28 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
     st = _stage("index")
     md_path = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"
     store = VectorStore(paths.vector_dir(cfg))
-    existing = store.paper_modes().get(sid)
-    if rec is not None and md_path.exists() and existing != "fulltext":
-        chunks = split_markdown(md_path.read_text(encoding="utf-8"), sid, rec.paper.title)
-        if chunks:
-            vectors = embed([c.text for c in chunks])
-            metas = [{**c.metadata, "mode": "fulltext"} for c in chunks]
-            store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
-            _end(st, "ok", f"{len(chunks)} 块")
+    try:
+        if not md_path.exists():
+            raise ValueError("解析文本缺失，不能声明索引就绪")
+        markdown = md_path.read_text(encoding="utf-8")
+        chunks = split_markdown(markdown, sid, rec.paper.title)
+        if not chunks:
+            raise ValueError("无可索引内容，不能声明索引就绪")
+        metas = index_metadata(markdown, chunks, cfg, "fulltext")
+        if index_current(store, sid, metas):
+            _end(st, "skipped", "索引内容与配置版本一致")
         else:
-            _end(st, "skipped", "无可索引内容")
-    else:
-        _end(st, "skipped", "已索引")
+            vectors = embed([c.text for c in chunks], cfg=cfg)
+            store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
+            _end(st, "ok", f"{len(chunks)} 块（版本已更新）")
+    except Exception as exc:
+        if rec.status == "indexed":
+            lib.set_status(sid, "analyzed", error=f"索引失败：{exc}"[:500])
+        else:
+            lib.set_status(sid, rec.status, error=f"索引失败：{exc}"[:500])
+        _end(st, "failed", str(exc)[:200])
+        out["final_status"] = lib.get(sid).status
+        return out
     # indexed 严格表示「分析+索引都完成」（M6 语义）
     rec = lib.get(sid)
     if rec is not None and rec.status == "analyzed":

@@ -15,8 +15,8 @@ from paper_agent.cli.core import (
     _data_dir,
     _knowledge_dir,
     _library,
-    _parsed_dir,
     _papers_dir,
+    _parsed_dir,
     _print_papers,
     _resolve,
     app,
@@ -32,6 +32,15 @@ from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import chunk_abstract, split_markdown
 from paper_agent.rag.vectorstore import VectorStore
 from paper_agent.services.search import ingest_papers, search_sources
+from paper_agent.services.versions import (
+    EXPERIMENT_CONTRACT,
+    REPORT_CONTRACT,
+    artifact_current,
+    index_current,
+    index_metadata,
+    knowledge_current,
+    save_artifact,
+)
 
 
 @app.command()
@@ -354,7 +363,12 @@ def analyze(
             targets = lib.list(status="parsed")
             for rec in lib.list(status="analyzed") + lib.list(status="indexed"):
                 rp = _knowledge_dir(cfg) / safe_dirname(rec.paper.source_id) / "report.md"
-                if not rp.exists() or len(rp.read_text(encoding="utf-8").strip()) < 30:
+                md = _parsed_dir(cfg) / safe_dirname(rec.paper.source_id) / "full_text.md"
+                markdown = md.read_text(encoding="utf-8") if md.exists() else ""
+                if markdown and not artifact_current(rp.parent / "experiment.json", markdown, cfg, EXPERIMENT_CONTRACT):
+                    lib.set_status(rec.paper.source_id, "parsed", error="知识版本过期或未登记")
+                    targets.append(lib.get(rec.paper.source_id))
+                elif not rp.exists() or len(rp.read_text(encoding="utf-8").strip()) < 30 or (markdown and not artifact_current(rp, markdown, cfg, REPORT_CONTRACT)):
                     targets.append(rec)
                     repair_ids.add(rec.paper.source_id)
         else:
@@ -388,7 +402,7 @@ def analyze(
                 experiment = None
                 if sid in repair_ids:
                     exp_path = out_dir / "experiment.json"
-                    if exp_path.exists():
+                    if artifact_current(exp_path, markdown, cfg, EXPERIMENT_CONTRACT):
                         try:
                             loaded = json.loads(exp_path.read_text(encoding="utf-8"))
                             if isinstance(loaded, dict) and loaded.get("token_usage"):
@@ -424,10 +438,9 @@ def analyze(
                 fail += 1
                 continue
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "experiment.json").write_text(
-                json.dumps(experiment, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            (out_dir / "report.md").write_text(report, encoding="utf-8")
+            save_artifact(out_dir / "experiment.json", json.dumps(experiment, ensure_ascii=False, indent=2),
+                          markdown, cfg, EXPERIMENT_CONTRACT)
+            save_artifact(out_dir / "report.md", report, markdown, cfg, REPORT_CONTRACT)
             # 修复目标保留原状态（indexed 不降级，否则重试扫描又看不见）
             lib.set_status(sid, rec.status if sid in repair_ids else "analyzed", error=None)
             low_conf = sum(1 for v in (experiment.get("confidence") or {}).values() if v == "low")
@@ -514,12 +527,11 @@ def index(
         elif all:
             targets = lib.list()
         else:
-            targets = lib.list(status="parsed") + lib.list(status="analyzed")
+            targets = lib.list(status="parsed") + lib.list(status="analyzed") + lib.list(status="indexed")
         if not targets:
             console.print("没有可索引的论文（需先 parse，或论文带摘要）。")
             return
         store = VectorStore(_data_dir(cfg) / "db")
-        existing = store.paper_modes()
         ok = skip = 0
         for rec in targets:
             sid, p = rec.paper.source_id, rec.paper
@@ -531,27 +543,33 @@ def index(
             else:
                 console.print(f"{WARN} [dim]{sid}[/dim] {p.title[:36]}…：无全文也无摘要，跳过")
                 continue
-            if existing.get(sid) == mode and not force:
-                # 先索引后分析的时序：向量库已有全文的 analyzed 论文补推进状态
+            if mode == "fulltext":
+                markdown = parsed_path.read_text(encoding="utf-8")
+                if rec.status in {"analyzed", "indexed"} and not knowledge_current(_knowledge_dir(cfg) / safe_dirname(sid), markdown, cfg):
+                    lib.set_status(sid, "parsed", error="知识版本过期或未登记")
+                    rec = lib.get(sid)
+                chunks = split_markdown(markdown, sid, p.title)
+            else:
+                markdown = p.abstract
+                chunks = chunk_abstract(sid, p.title, p.abstract)
+            if not chunks:
+                if rec.status == "indexed":
+                    lib.set_status(sid, "analyzed", error="分块为空，索引不可用")
+                console.print(f"{FAIL} [dim]{sid}[/dim] {p.title[:36]}…：分块结果为空")
+                continue
+            metas = index_metadata(markdown, chunks, cfg, mode)
+            if index_current(store, sid, metas) and not force:
                 if mode == "fulltext" and rec.status == "analyzed":
                     lib.set_status(sid, "indexed", error=None)
                 skip += 1
                 continue
-            if mode == "fulltext":
-                markdown = parsed_path.read_text(encoding="utf-8")
-                chunks = split_markdown(markdown, sid, p.title)
-            else:
-                chunks = chunk_abstract(sid, p.title, p.abstract)
-            if not chunks:
-                console.print(f"{FAIL} [dim]{sid}[/dim] {p.title[:36]}…：分块结果为空")
-                continue
             try:
-                vectors = embed([c.text for c in chunks])
-            except RuntimeError as exc:
+                vectors = embed([c.text for c in chunks], cfg=cfg)
+                store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
+            except Exception as exc:
+                lib.set_status(sid, "analyzed" if rec.status == "indexed" else rec.status, error=f"索引失败：{exc}"[:500])
                 console.print(f"{FAIL} {exc}")
                 raise typer.Exit(code=1) from exc
-            metas = [{**c.metadata, "mode": mode} for c in chunks]
-            store.upsert_paper_chunks(sid, [c.text for c in chunks], metas, vectors)
             # 仅对 analyzed 推进状态；parsed（分析失败/未跑）保持原状
             if mode == "fulltext" and rec.status == "analyzed":
                 lib.set_status(sid, "indexed", error=None)

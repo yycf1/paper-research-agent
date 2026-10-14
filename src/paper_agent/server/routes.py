@@ -234,6 +234,27 @@ def api_paper_detail(sid: str, lib: Library = Depends(open_lib)) -> dict:
     out["full_text"] = (
         fulltext_path.read_text(encoding="utf-8") if fulltext_path.exists() else None
     )
+    from paper_agent.rag.splitter import chunk_abstract, split_markdown
+    from paper_agent.services.versions import (
+        index_current,
+        index_metadata,
+        knowledge_current,
+    )
+
+    store = VectorStore(paths.vector_dir(cfg))
+    if callable(getattr(store, "all_hits", None)):
+        hits = store.all_hits(paper_id=sid)
+        text = out["full_text"] if out["full_text"] is not None else rec.paper.abstract
+        mode = "fulltext" if out["full_text"] is not None else "abstract"
+        chunks = split_markdown(text, sid, rec.paper.title) if mode == "fulltext" else chunk_abstract(sid, rec.paper.title, text)
+        current = index_current(store, sid, index_metadata(text, chunks, cfg, mode))
+        registered = any(getattr(h, "source_sha256", "") for h in hits)
+        state = "ready" if current else "stale" if registered else "legacy" if hits else "unindexed"
+        out["index_state"] = {"status": state, "chunk_count": len(hits), "mode": mode,
+                              "can_ask": state in {"ready", "legacy"}}
+    else:
+        out["index_state"] = {"status": "unknown", "chunk_count": None, "can_ask": False}
+    out["knowledge_current"] = bool(out["full_text"] and knowledge_current(knowledge, out["full_text"], cfg))
     return out
 
 

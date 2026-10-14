@@ -46,7 +46,7 @@ def _patch_llm(monkeypatch, report_fail_first: bool):
                         lambda markdown, chat_fn=None: {"research_goal": "g", "method": "m"})
     monkeypatch.setattr(proc, "split_markdown",
                         lambda md, sid, title: [SimpleNamespace(text="块1", metadata={})])
-    monkeypatch.setattr(proc, "embed", lambda texts: [[0.0, 0.0] for _ in texts])
+    monkeypatch.setattr(proc, "embed", lambda texts, **kw: [[0.0, 0.0] for _ in texts])
     monkeypatch.setattr(proc, "VectorStore", _FakeStore)
 
     def fake_report(markdown, chat_fn=None):
