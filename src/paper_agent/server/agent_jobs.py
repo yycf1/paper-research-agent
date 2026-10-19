@@ -23,6 +23,7 @@ from paper_agent import paths
 from paper_agent.agent import ToolExecutor, run_agent_task
 from paper_agent.rag.qa import Retriever
 from paper_agent.rag.vectorstore import VectorStore
+from paper_agent.observability import current_summary
 
 CONFIRM_TIMEOUT = 300  # 秒；超时按拒绝处理（宁可少做不可多做）
 
@@ -44,6 +45,10 @@ class AgentTaskState:
     finished_at: float = 0.0
     anchor: str = ""  # M26：锚定论文 id（空 = 未锚定）
     allowed_paper_ids: list[str] | None = None
+    acceptance: list[dict] = field(default_factory=list)
+    verification: dict = field(default_factory=dict)
+    telemetry: dict = field(default_factory=dict)
+    duration_ms: int = 0
 
     def to_dict(self, *, with_steps: bool = True) -> dict:
         out = {
@@ -58,6 +63,9 @@ class AgentTaskState:
             "step_count": len(self.steps),
             "anchor": self.anchor,
             "allowed_paper_ids": self.allowed_paper_ids,
+            "verification": self.verification,
+            "telemetry": self.telemetry,
+            "duration_ms": self.duration_ms,
         }
         if with_steps:
             out["steps"] = self.steps
@@ -92,6 +100,8 @@ class _Registry:
         task_id: str | None = None,
         anchor: str | None = None,
         allowed_paper_ids: list[str] | None = None,
+        acceptance: list[dict] | None = None,
+        history: list[tuple[str, str]] | None = None,
     ) -> AgentTaskState:
         """提交任务并在守护线程执行。chat_fn 可注入（测试用假模型）。
 
@@ -104,13 +114,14 @@ class _Registry:
             id=task_id or uuid.uuid4().hex[:12], task=task,
             started_at=time.time(), anchor=(anchor or "").strip(),
             allowed_paper_ids=list(allowed_paper_ids) if allowed_paper_ids is not None else ([anchor] if anchor else None),
+            acceptance=acceptance or [],
         )
         handle = _Handle(state=state)
         with self._lock:
             self._tasks[state.id] = handle
         threading.Thread(
             target=self._run,
-            args=(handle, cfg, chat_fn, max_steps, token_budget, trace_path, state.anchor),
+            args=(handle, cfg, chat_fn, max_steps, token_budget, trace_path, state.anchor, history),
             daemon=True,
         ).start()
         return state
@@ -150,6 +161,7 @@ class _Registry:
         token_budget: int | None,
         trace_path: Path | None,
         anchor: str = "",
+        history: list[tuple[str, str]] | None = None,
     ) -> None:
         state = handle.state
 
@@ -164,11 +176,15 @@ class _Registry:
         def _on_event(step) -> None:
             state.steps.append(asdict(step))
 
+        def _on_call(_call) -> None:
+            state.telemetry = current_summary()
+            state.usage = {k: state.telemetry.get(k, 0) for k in ('prompt', 'completion')}
+
         try:
             job_lib = paths.library(cfg)  # 任务线程用自己的账本连接
             try:
                 store = VectorStore(paths.vector_dir(cfg))
-                retriever = Retriever(store) if store.count() > 0 else None
+                retriever = Retriever(store, cfg=cfg) if store.count() > 0 else None
                 executor = ToolExecutor(
                     lib=job_lib, retriever=retriever, cfg=cfg, confirm=_confirm,
                     anchor=anchor or None,
@@ -176,6 +192,7 @@ class _Registry:
                 )
                 result = run_agent_task(
                     state.task,
+                    history=history,
                     executor=executor,
                     cfg=cfg,
                     max_steps=max_steps,
@@ -184,10 +201,15 @@ class _Registry:
                     on_event=_on_event,
                     trace_path=trace_path,
                     anchor=anchor or None,
+                    acceptance=state.acceptance,
+                    on_call=_on_call,
                 )
                 state.answer = result.answer
                 state.stopped_reason = result.stopped_reason
                 state.usage = result.usage
+                state.verification = result.verification
+                state.telemetry = result.telemetry
+                state.duration_ms = result.duration_ms
                 if result.stopped_reason == "error":
                     state.status = "error"
                     state.error = result.answer

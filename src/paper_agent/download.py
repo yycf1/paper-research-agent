@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import time
+import re
 import uuid
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 import pymupdf
 import requests
@@ -24,6 +25,11 @@ _RETRY_DELAY = 3
 
 class DownloadError(Exception):
     """没有可下载/可校验的全文；错误保留来源拒绝、网络与内容原因。"""
+
+    def __init__(self, message: str, *, code: str = "download_failed", attempts: list[str] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.attempts = attempts or []
 
 
 def safe_dirname(source_id: str) -> str:
@@ -62,7 +68,10 @@ def _citation_pdf_url(head: bytes, chunks) -> str | None:
 
 
 def _refresh_candidates(paper: Paper, proxy: str) -> list[str]:
-    return refresh_pdf_urls(paper.source_id, proxy=proxy)
+    arxiv = re.fullmatch(r"arxiv:(\d{4}\.\d{4,5}(?:v\d+)?|[a-zA-Z.-]+/\d{7}(?:v\d+)?)", paper.source_id)
+    if arxiv:
+        return [f"https://arxiv.org/pdf/{arxiv[1]}"]
+    return refresh_pdf_urls(paper.source_id, proxy=proxy, doi=paper.doi)
 
 
 def _display_url(url: str) -> str:
@@ -88,8 +97,6 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
     Retry-After 超过 3 秒时直接换候选。旧 OpenAlex 候选用尽后查询一次
     同 Work 的开放副本，不解验证码或绕过访问限制。
     """
-    if not paper.pdf_urls:
-        raise DownloadError("无候选全文链接；当前只有文献信息，可导入本地 PDF/DOCX")
     root = papers_dir.resolve()
     dest_dir = (root / safe_dirname(paper.source_id)).resolve()
     if dest_dir == root or not dest_dir.is_relative_to(root):
@@ -99,8 +106,16 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
     tmp = dest_dir / f"paper.{uuid.uuid4().hex}.pdf.part"
     proxies = {"http": proxy, "https": proxy} if proxy else None
     errors: list[str] = []
+    reasons: list[str] = []
     tried: set[str] = set()
     queue = list(paper.pdf_urls)
+    # A DOI or the article's own landing page can expose citation_pdf_url without
+    # requiring a metadata API account. Never guess arbitrary other-paper links.
+    if paper.landing_page:
+        queue.append(paper.landing_page)
+    if paper.doi and re.fullmatch(r"10\.\d{4,9}/\S+", paper.doi):
+        queue.append("https://doi.org/" + quote(paper.doi, safe="/"))
+    queue = list(dict.fromkeys(queue))
     refreshed = False
     requests_used = 0
     while requests_used < _MAX_REQUESTS:
@@ -112,6 +127,7 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
                 queue.extend(url for url in _refresh_candidates(paper, proxy) if url not in tried)
             except (SourceUnavailable, requests.RequestException, ValueError) as exc:
                 errors.append(f"开放副本查询失败：{exc}")
+                reasons.append("metadata_unavailable")
             if not queue:
                 break
         url = queue.pop(0)
@@ -120,6 +136,7 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
         tried.add(url)
         if urlsplit(url).scheme not in {"http", "https"}:
             errors.append("忽略非 HTTP 全文地址")
+            reasons.append("invalid_url")
             continue
         for attempt in range(2):
             if requests_used >= _MAX_REQUESTS:
@@ -132,6 +149,7 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
                     if resp.status_code != 200:
                         hint = "（来源拒绝访问，可尝试其他开放副本或手动导入）" if resp.status_code in {401, 403} else ""
                         errors.append(f"{_display_url(url)} -> HTTP {resp.status_code}{hint}")
+                        reasons.append({401: "authorization", 403: "access_denied", 404: "not_found", 429: "rate_limited"}.get(resp.status_code, "source_error"))
                         retry_after = resp.headers.get("Retry-After", "0")
                         short_wait = retry_after.isdigit() and int(retry_after) <= _RETRY_DELAY
                         retry = attempt == 0 and (resp.status_code in {500, 502, 503, 504} or (resp.status_code == 429 and short_wait))
@@ -141,6 +159,7 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
                         content_type = resp.headers.get("content-type", "").lower()
                         if not head.lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"%PDF-"):
                             errors.append(f"{_display_url(url)} -> 非 PDF 内容（{content_type or '未知类型'}）")
+                            reasons.append("non_pdf")
                             if "html" in content_type or head.lstrip().startswith(b"<"):
                                 landed = _citation_pdf_url(head, chunks)
                                 if landed:
@@ -161,11 +180,13 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
                         return out
             except requests.RequestException as exc:
                 errors.append(f"{_display_url(url)} -> 网络异常（{type(exc).__name__}）")
+                reasons.append("network")
                 retry = attempt == 0
             except ValueError as exc:
                 errors.append(f"{_display_url(url)} -> {exc}")
+                reasons.append("invalid_pdf")
             except OSError as exc:
-                raise DownloadError(f"本地文件写入失败：{exc}") from exc
+                raise DownloadError(f"本地文件写入失败：{exc}", code="local_io", attempts=errors) from exc
             finally:
                 # 唯一临时文件在已验证的文献子目录内；只清理本次请求创建的文件。
                 tmp.unlink(missing_ok=True)
@@ -174,4 +195,9 @@ def download_pdf(paper: Paper, papers_dir: Path, *, proxy: str = "") -> Path:
             time.sleep(_RETRY_DELAY)
     if requests_used >= _MAX_REQUESTS:
         errors.append("已达单篇 12 次请求上限")
-    raise DownloadError("; ".join(errors) or "没有可验证的 PDF 全文")
+    code = reasons[-1] if reasons else "no_link"
+    # An unavailable metadata refresh must not hide the actual download rejection.
+    if code == "metadata_unavailable" and len(reasons) > 1:
+        code = reasons[-2]
+    raise DownloadError("; ".join(errors) or "无候选全文链接；当前只有文献信息，可给此记录上传 PDF/DOCX",
+                        code=code, attempts=errors)

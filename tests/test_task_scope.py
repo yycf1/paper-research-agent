@@ -103,7 +103,9 @@ def test_scope_persists_in_prompt_trace_and_history(context, tmp_path):
         return ChatResponse(content="done", tool_calls=[], usage={})
 
     trace = tmp_path / "20261014-120000-scope.jsonl"
-    run_agent_task("compare", executor=ex, cfg=cfg, chat_fn=chat, trace_path=trace)
+    result = run_agent_task("compare", executor=ex, cfg=cfg, chat_fn=chat, trace_path=trace)
+    assert "所选 2 篇论文" in result.answer
+    assert ex.execute("library_status", "{}").data["scope"] == "selected_papers"
     expected = ["openalex:W1", "openalex:W2"]
     assert json.loads(trace.read_text(encoding="utf-8").splitlines()[0])["allowed_paper_ids"] == expected
     assert _history_task(trace, with_steps=True)["allowed_paper_ids"] == expected

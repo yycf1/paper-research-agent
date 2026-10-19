@@ -13,7 +13,10 @@ def test_download_only_selected_and_keep_partial_failures(tmp_path, monkeypatch)
         lib.upsert_paper(Paper(source="local", source_id=sid, title=sid,
                                pdf_urls=[] if sid.endswith("no-link") else ["https://example.org/file.pdf"]))
     cached = tmp_path / "cached.docx"
-    cached.write_bytes(b"existing fixture")
+    from docx import Document
+    document = Document()
+    document.add_paragraph("Original cached document fixture")
+    document.save(cached)
     lib.set_status("local:cached", "indexed", pdf_path=str(cached))
     calls = []
 

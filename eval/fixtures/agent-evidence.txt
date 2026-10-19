@@ -1,0 +1,14 @@
+Original isolated demonstration. This is synthetic research material, not a published paper.
+
+1 Methods
+Demo-M uses a two-stage retriever: BM25 and dense retrieval are fused before reranking.
+The task is retrieval on Synthetic-A with a fixed held-out test split.
+
+2 Results
+Demo-M Recall@5 is 0.72, expressed as a ratio, on Synthetic-A held-out test queries.
+Recall@5 is the fraction of relevant documents included among the five retrieved results.
+Evaluation ranks the full candidate corpus without negative sampling.
+There are 100 held-out test queries; this illustrative value is not a real benchmark result.
+
+3 Limitations
+The material does not report confidence intervals or external validation.

@@ -11,6 +11,7 @@ export interface Paper {
   has_pdf: boolean;
   /** 已保存的本地 PDF/DOCX；has_pdf 仅表示来源提供下载链接。 */
   has_local_file?: boolean;
+  local_file_type?: "pdf" | "docx" | null;
   landing_page: string | null;
   abstract_only?: boolean;
   status: string;
@@ -72,8 +73,11 @@ export interface IngestReply {
 export interface DownloadItem {
   source_id: string;
   title: string;
-  status: "pending" | "running" | "saved" | "already_saved" | "no_link" | "failed" | "missing";
+  status: "pending" | "running" | "saved" | "already_saved" | "no_link" | "failed" | "missing" | "interrupted";
   detail: string;
+  failure_kind?: string;
+  action?: string;
+  attempts?: string[];
 }
 
 export interface TagWithCount {
@@ -114,6 +118,7 @@ export interface AskReply {
   sources: SourceRef[];
   answer_status?: string;
   citation_check?: { status: string; semantic_support: string } | null;
+  telemetry?: CallTelemetry;
   retrieval_notes?: string[];
 }
 
@@ -131,6 +136,11 @@ export interface ChatReply {
   notes: string[];
   new_papers: Paper[];
   sources?: SourceRef[];
+  routing?: { intent: string; via: string; fallback_reason?: string; catalogue?: { operation: string; query: string } };
+  telemetry?: CallTelemetry;
+  answer_status?: string;
+  paper_ids?: string[] | null;
+  comparison?: ComparisonReply | null;
 }
 
 export interface ChatSession {
@@ -149,13 +159,15 @@ export interface ChatMessage {
   understanding: string | null;
   notes: string[];
   sources?: SourceRef[] | null;
+  details?: { paper_ids?: string[] | null; action?: string; comparison?: ComparisonReply | null;
+    task_id?: string; telemetry?: CallTelemetry; answer_status?: string };
   created_at: string;
 }
 
 export interface Job {
   id: string;
   kind: string;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "interrupted";
   result: Record<string, unknown>;
   error: string;
 }
@@ -178,6 +190,29 @@ export interface AgentStepView {
   detail: string;
   duration_ms: number;
   comparison?: { papers: { paper_id: string; title: string; field_evidence: BoundFields }[] } | null;
+  observation?: { sources?: SourceRef[]; selected_ids?: string[]; answer_status?: string; declined?: boolean } | null;
+}
+
+export interface TaskVerification {
+  status: "passed" | "failed" | "partial" | "unverified";
+  execution_finished?: boolean;
+  checks: { kind: string; passed: boolean | null; detail: string }[];
+  note?: string;
+  added_ids?: string[] | null;
+}
+export interface CallTelemetry {
+  call_count: number;
+  known_usage_calls: number;
+  unknown_usage_calls: number;
+  usage_complete: boolean;
+  prompt: number;
+  completion: number;
+  embedding_tokens: number;
+  rerank_tokens: number;
+  cost_note: string;
+  calls: { id: number; kind: string; stage: string; model: string; status: string;
+    elapsed_ms: number; usage_known: boolean; usage: { prompt?: number; completion?: number; total?: number };
+    error_type?: string; units?: Record<string, number> }[];
 }
 
 export interface FieldFact {
@@ -217,6 +252,10 @@ export interface AgentTaskState {
   error: string;
   allowed_paper_ids?: string[] | null;
   anchor?: string;
+  verification?: TaskVerification;
+  telemetry?: CallTelemetry;
+  duration_ms?: number;
+  provenance?: string;
 }
 
 /** 任务历史条目（M23）：live=注册表内存态；否则来自磁盘轨迹回读。 */
@@ -231,6 +270,7 @@ export interface AgentTaskBrief {
   error: string;
   live: boolean;
   ts: number;
+  verification?: TaskVerification;
 }
 
 /** 复现产物（M24）：方案 + 工作区文件 + run_code 运行记录。 */
@@ -297,8 +337,25 @@ export const api = {
   },
   paper: (id: string) => req<PaperDetail>(`/papers/${encodeURIComponent(id)}`),
   paperFacts: (id: string) => req<BoundFields>(`/papers/${encodeURIComponent(id)}/facts`),
+  reviewFact: (id: string, source_version: string, claim_sha256: string, status: string, note: string) =>
+    req<BoundFields>(`/papers/${encodeURIComponent(id)}/facts/reviews`, { method: "POST", body: JSON.stringify({
+      source_version, claim_sha256, status, note, reviewer: "本人", review_kind: "human",
+    }) }),
   deletePaper: (id: string) =>
-    req<{ ok: boolean }>(`/papers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    req<{ ok: boolean; removed?: boolean; cleanup_pending?: boolean; detail?: string }>(`/papers/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  download: (source_ids: string[]) => req<Job>("/papers/download", {
+    method: "POST", body: JSON.stringify({ source_ids }),
+  }),
+  retryDownload: (id: string) => req<Job>(`/jobs/${encodeURIComponent(id)}/retry`, { method: "POST" }),
+  pendingCleanup: () => req<{ items: { source_id: string; error: string }[] }>("/maintenance/cleanup"),
+  retryCleanup: () => req<{ remaining: number }>("/maintenance/cleanup", { method: "POST" }),
+  originalFile: (id: string, page?: number) => `/api/papers/${encodeURIComponent(id)}/file${page ? `#page=${page}` : ""}`,
+  attachFulltext: (id: string, file: File, replaceExisting = false) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("replace_existing", String(replaceExisting));
+    return req<{ paper: Paper }>(`/papers/${encodeURIComponent(id)}/fulltext`, { method: "POST", body: fd }, 300_000);
+  },
   tags: () => req<TagsReply>("/tags"),
   createTag: (name: string) =>
     req<TagWithCount>("/tags", { method: "POST", body: JSON.stringify({ name }) }),
@@ -359,16 +416,16 @@ export const api = {
     req<AskReply>("/ask", { method: "POST", body: JSON.stringify({ question, paper_id, paper_ids }) }),
   compare: (topic: string, paper_ids: string[]) =>
     req<ComparisonReply>("/compare", { method: "POST", body: JSON.stringify({ topic, paper_ids }) }),
-  chat: (message: string, session_id?: string | null) =>
+  chat: (message: string, session_id?: string | null, paper_ids?: string[] | null, action: "chat" | "compare" = "chat") =>
     req<ChatReply>("/chat", {
       method: "POST",
-      body: JSON.stringify({ message, session_id: session_id ?? undefined }),
+      body: JSON.stringify({ message, session_id: session_id ?? undefined, paper_ids, action }),
     }),
   sessions: () => req<{ sessions: ChatSession[] }>("/sessions"),
   createSession: (title = "新对话") =>
     req<ChatSession>("/sessions", { method: "POST", body: JSON.stringify({ title }) }),
   sessionMessages: (sid: string) =>
-    req<{ session_id: string; messages: ChatMessage[] }>(`/sessions/${sid}/messages`),
+    req<{ session_id: string; paper_ids?: string[] | null; messages: ChatMessage[] }>(`/sessions/${sid}/messages`),
   deleteSession: (sid: string) =>
     req<{ ok: boolean }>(`/sessions/${sid}`, { method: "DELETE" }),
   process: (id: string) =>
@@ -389,7 +446,7 @@ export const api = {
     req<Job>("/jobs/run", { method: "POST", body: JSON.stringify({ query }) }),
   job: (id: string) => req<Job>(`/jobs/${id}`),
   jobs: () => req<{ jobs: Job[] }>("/jobs"),
-  agentSubmit: (task: string, maxSteps?: number, anchorSourceId?: string, allowedPaperIds?: string[]) =>
+  agentSubmit: (task: string, maxSteps?: number, anchorSourceId?: string, allowedPaperIds?: string[] | null, acceptance?: Record<string, unknown>[], sessionId?: string) =>
     req<AgentTaskState>("/agent/tasks", {
       method: "POST",
       body: JSON.stringify({
@@ -397,10 +454,13 @@ export const api = {
         max_steps: maxSteps ?? undefined,
         anchor_source_id: anchorSourceId?.trim() || undefined,
         allowed_paper_ids: allowedPaperIds,
+        acceptance,
+        session_id: sessionId,
       }),
     }),
   agentTask: (id: string) => req<AgentTaskState>(`/agent/tasks/${encodeURIComponent(id)}`),
   agentTasks: () => req<{ tasks: AgentTaskBrief[] }>("/agent/tasks"),
+  agentDemos: () => req<{ demos: AgentTaskState[] }>("/agent/demos"),
   agentConfirm: (id: string, approve: boolean) =>
     req<{ ok: boolean }>(`/agent/tasks/${encodeURIComponent(id)}/confirm`, {
       method: "POST",

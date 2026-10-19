@@ -3,3 +3,6 @@
 *.jpg binary
 *.pdf binary
 *.ico binary
+
+# Recorded trace hashes refer to exact bytes, including original line endings.
+/eval/demo-traces/*.jsonl -text whitespace=cr-at-eol

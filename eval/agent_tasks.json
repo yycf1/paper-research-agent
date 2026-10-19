@@ -1,90 +1,59 @@
 {
-  "name": "paper-agent Agent 任务评测集 v1",
-  "description": "12 个任务覆盖三类能力面：single_tool（单工具意图命中）/ multi_step（多步编排）/ boundary（边界行为：域外拒绝、模糊澄清、空结果诚实汇报）。M19 新增跨论文对比（compare-01）与复现执行（repro-01）能力面。must_call 为期望出现的工具（子集判定）；forbidden 为禁止出现的工具（越界即违规）；expect_keywords 组间 AND、组内 OR。事实类答案已对照库内核验内容撰写（2026-09-28；compare/repro 用例 2026-09-30 核验库内 id 与产物存在）。",
+  "name": "Original synthetic agent task examples",
+  "description": "仅为工具路由与任务结构示例。事实任务需要先在隔离库准备 synthetic:alpha/beta；真实录制回放见 agent_demos.json。不是质量基准。",
   "cases": [
     {
-      "id": "status-01",
+      "id": "status-demo",
       "kind": "single_tool",
-      "task": "看看文献库现在有多少篇论文，都在什么状态",
-      "must_call": ["library_status"],
-      "expect_keywords": [["篇"]]
+      "task": "查看文献库的条目数和状态",
+      "must_call": [
+        "library_status"
+      ],
+      "expect_keywords": [
+        [
+          "篇"
+        ]
+      ]
     },
     {
-      "id": "ask-01",
+      "id": "ask-demo",
       "kind": "single_tool",
-      "task": "S-MBRec 的自监督任务用了哪种对比损失？",
-      "must_call": ["ask_library"],
-      "expect_keywords": [["InfoNCE", "info_nce", "对比损失"]]
+      "task": "Synthetic Alpha 使用哪个数据集？",
+      "must_call": [
+        "ask_library"
+      ],
+      "expect_keywords": [
+        [
+          "DATA-ALPHA"
+        ]
+      ]
     },
     {
-      "id": "explore-01",
-      "kind": "single_tool",
-      "task": "我最近没头绪，不知道该看什么论文，给我推荐几个研究方向",
-      "must_call": ["explore_directions"]
-    },
-    {
-      "id": "search-preview-01",
+      "id": "compare-demo",
       "kind": "multi_step",
-      "task": "检索 2024 年以后关于 graph neural network recommendation 的论文，告诉我有哪些值得关注的（先不要入库）",
-      "must_call": ["search_papers"],
-      "forbidden": ["add_papers"],
-      "max_steps": 6
+      "task": "比较 synthetic:alpha 和 synthetic:beta 的研究目标、数据集和指标",
+      "must_call": [
+        "compare_papers"
+      ],
+      "expect_keywords": [
+        [
+          "DATA-ALPHA"
+        ],
+        [
+          "DATA-BETA"
+        ]
+      ]
     },
     {
-      "id": "search-add-01",
-      "kind": "multi_step",
-      "task": "帮我找 2 篇 2024 年以后的 graph neural network recommendation 论文入库",
-      "must_call": ["search_papers", "add_papers"],
-      "max_steps": 8
-    },
-    {
-      "id": "multi-01",
-      "kind": "multi_step",
-      "task": "先看看库里有多少篇论文；然后检索 2024 年以后的 knowledge graph embedding 论文，挑 1 篇高引用的入库",
-      "must_call": ["library_status", "search_papers", "add_papers"],
-      "max_steps": 8
-    },
-    {
-      "id": "compare-01",
-      "kind": "multi_step",
-      "task": "对比库里 openalex:W2998374885 和 PMC13372246 这两篇论文在方法上的异同",
-      "must_call": ["compare_papers"],
-      "max_steps": 6
-    },
-    {
-      "id": "repro-01",
-      "kind": "multi_step",
-      "task": "为库内论文 openalex:W2998374885 写一个最小可运行的 Python 原型来验证它的方法机制（只用标准库和 numpy，合成数据，不联网），实际运行并把输出结果告诉我",
-      "must_call": ["read_repro_plan", "write_code", "run_code"],
-      "max_steps": 12
-    },
-    {
-      "id": "boundary-chitchat-01",
+      "id": "empty-demo",
       "kind": "boundary",
-      "task": "帮我写一份本周的工作周报",
-      "forbidden": ["search_papers", "add_papers", "ask_library", "library_status", "explore_directions", "compare_papers", "read_repro_plan", "write_code", "run_code"],
-      "expect_keywords": [["论文", "文献", "科研", "研究", "学术"]]
-    },
-    {
-      "id": "boundary-code-01",
-      "kind": "boundary",
-      "task": "用 Python 帮我写一个快速排序",
-      "forbidden": ["search_papers", "add_papers", "ask_library", "library_status", "explore_directions", "compare_papers", "read_repro_plan", "write_code", "run_code"],
-      "expect_keywords": [["论文", "文献", "科研", "研究", "学术"]]
-    },
-    {
-      "id": "boundary-ambiguous-01",
-      "kind": "boundary",
-      "task": "帮我处理一下",
-      "forbidden": ["add_papers"],
-      "expect_keywords": [["？", "?", "什么", "哪", "怎么"]]
-    },
-    {
-      "id": "boundary-empty-result-01",
-      "kind": "boundary",
-      "task": "帮我检索 2025 年「量子泡沫时空多宇宙」方向的综述论文",
-      "must_call": ["search_papers"],
-      "max_steps": 6
+      "task": "库中是否报告过 Synthetic Alpha 的耗电量？没有证据请说明。",
+      "must_call": [
+        "ask_library"
+      ],
+      "forbidden": [
+        "add_papers"
+      ]
     }
   ]
 }

@@ -7,12 +7,20 @@ const output = path.resolve(process.env.WEB_QA_OUTPUT || 'data/web-qa');
 fs.mkdirSync(output, { recursive: true });
 const base = process.env.WEB_QA_URL || 'http://127.0.0.1:18809';
 const titles = ['Evidence-aware Research Question Answering', 'Graph Learning with Explicit Evaluation Protocols', 'Vision Models: A Local Reading Example'];
-function paper(n) { return { source_id: `local:demo-${n}`, source: 'local', title: titles[n - 1] || ({ 4: 'Newly Discovered Research Example', 5: 'Restricted Download Example', 6: 'No Fulltext Candidate Example', 7: 'Metadata Bookmark Example', 8: 'Legacy Server Response Example' })[n], authors: ['原创界面示例'], year: 2024 + n % 2, doi: null, citations: null, has_pdf: n !== 6, has_local_file: n === 1 || n === 3, landing_page: null, status: n >= 4 ? 'discovered' : n === 3 ? 'parsed' : 'indexed', error: null, added_at: '2026-10-14T10:00:00', tag: n === 3 ? '视觉研究' : '检索与智能体', abstract: '原创离线界面示例，仅用于验证交互。' }; }
+function paper(n) { return { source_id: `local:demo-${n}`, source: 'local', title: titles[n - 1] || ({ 4: 'Newly Discovered Research Example', 5: 'Restricted Download Example', 6: 'No Fulltext Candidate Example', 7: 'Metadata Bookmark Example', 8: 'Legacy Server Response Example' })[n], authors: ['原创界面示例'], year: 2024 + n % 2, doi: null, citations: null, has_pdf: n !== 6, has_local_file: n === 1 || n === 3, local_file_type: n === 1 || n === 3 ? 'pdf' : null, landing_page: null, status: n >= 4 ? 'discovered' : n === 3 ? 'parsed' : 'indexed', error: null, added_at: '2026-10-14T10:00:00', tag: n === 3 ? '视觉研究' : '检索与智能体', abstract: '原创离线界面示例，仅用于验证交互。' }; }
 function fields(p) {
   const fact = (field, value) => ({ field, raw_value: value, normalized_value: value, citation_status: 'valid', support_status: 'unverified', claim_sha256: `fixture-${p.source_id}-${field}`, issues: [], review: null, evidence: [{ paper_id: p.source_id, chunk_id: `${p.source_id}::0`, section: '4 Experiments', page: 3, quote: 'Synthetic-A uses a fixed test split; Recall@10 is reported as a ratio.' }] });
   return { schema_version: 1, paper_id: p.source_id, source_version: 'original-offline-fixture', fields: { research_goal: [fact('research_goal', '研究带证据的文献问答')], datasets: [fact('datasets', { name: 'Synthetic-A', split: 'fixed test split' })], metrics: [fact('metrics', { name: 'Recall@10', value: '0.5', task: 'retrieval', dataset: 'Synthetic-A', split: 'fixed test split', definition: 'recall at 10', unit: 'ratio', evaluation_protocol: 'full candidate set', model: 'Demo' })] }, omitted: {}, unmatched_reviews: 0, load_issues: [], numeric_comparison: { ranking_allowed: false, reason: '条件仍需核对' } };
 }
 function detail(p) { return { ...p, experiment: { research_goal: '研究带证据的文献问答', method: { name: 'Demo' }, datasets: [], metrics: [], generated_at: '2026-10-14T10:00:00' }, report: '## 一句话总结\n这是一份原创离线阅读示例。\n\n## 实验设计\nSynthetic-A 固定测试划分，报告 Recall@10；尚需核对原文依据。', repro_plan: null, full_text: '## Method\nOriginal synthetic text for browser verification.\n\n## Experiments\nSynthetic-A uses a fixed test split.', index_state: { status: p.status === 'indexed' ? 'ready' : 'unindexed', chunk_count: p.status === 'indexed' ? 2 : 0, can_ask: p.status === 'indexed' }, knowledge_current: true }; }
+function demoRun(failed) {
+  return { id: failed ? 'offline-failure' : 'offline-success', task: failed ? '离线失败回放示例' : '离线成功回放示例', status: 'done', pending_confirm: null, error: '', stopped_reason: 'final',
+    answer: failed ? '所选资料尚未索引，无法给出指标。' : '原创示例指标为 0.5 [1]。', step_count: 1, duration_ms: 1234, usage: { prompt: 11, completion: 7 }, provenance: '脚本化离线示例，用于界面测试',
+    verification: { status: failed ? 'failed' : 'passed', checks: [{ kind: 'evidence_answer', passed: !failed, detail: failed ? '所选论文尚未建立索引' : '引用结构通过，语义仍需核对' }], note: '按所选条件核对，不能代表全部语义正确。' },
+    steps: [{ step: 1, tool: 'ask_library', arguments: { question: '示例指标' }, status: 'ok', detail: failed ? '尚无可检索索引块' : '已取得示例证据', duration_ms: 100, observation: failed ? {} : { sources: [{ paper_id: 'local:demo-1', title: titles[0], section: 'Results', n: [1], chunks: [{ n: 1, chunk_id: 'local:demo-1::0', page: 1, text: 'Original fixture metric is 0.5.' }] }] } }],
+    telemetry: { call_count: 1, known_usage_calls: 0, unknown_usage_calls: 1, usage_complete: false, prompt: 11, completion: 7, embedding_tokens: 0, rerank_tokens: 0, cost_note: '未配置价格，未估算费用',
+      calls: [{ id: 1, kind: 'rerank', stage: 'retrieval.rerank', model: 'offline-fixture', status: 'ok', elapsed_ms: 100, usage_known: false, usage: {} }] } };
+}
 (async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_BROWSER_PATH ? { executablePath: process.env.PLAYWRIGHT_BROWSER_PATH } : {}) });
   const checks = [], errors = [], requests = [];
@@ -22,6 +30,8 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       const page = await context.newPage();
       await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { value: { writeText: async text => { window.__copiedAnswer = text; } } }); });
       let papers = [paper(1), paper(2), paper(3)];
+      const sessions = [], messages = {}, scopes = {};
+      const createSession = title => { const s = { id: `session-${sessions.length + 1}`, title, updated_at: '2026-10-16T10:00:00', message_count: 0 }; sessions.unshift(s); messages[s.id] = []; return s; };
       let pending = true;
       let submitted = null, submittedPending = true, failDeleteOnce = true;
       let downloadJob = null;
@@ -38,16 +48,35 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
         const task = { id: 'waiting-demo', task: '确认后执行一个示例操作', status: pending ? 'waiting_confirm' : 'done', steps: [], step_count: 0, pending_confirm: pending ? { count: 1, titles: ['示例操作：仅测试确认界面'] } : null, answer: pending ? '' : '已拒绝示例操作。', stopped_reason: 'final', usage: { prompt: 0, completion: 0 }, error: '', allowed_paper_ids: ['local:demo-1'], live: true, ts: 1791964800 };
         if (name === '/status') return respond({ version: 'demo', total: papers.length, counts: papers.reduce((counts, p) => ({ ...counts, [p.status]: (counts[p.status] || 0) + 1 }), {}), vector_chunks: 6 });
         if (name === '/settings') return respond({ base_url: 'https://example.invalid/v1', model: 'offline-fixture', api_key_masked: '', has_key: true, theme: 'light' });
+        if (name === '/maintenance/cleanup') return respond({ items: [] });
+        if (name === '/agent/demos') return respond({ demos: [demoRun(false), demoRun(true)] });
         if (name === '/tags') return respond({ tags: [{ name: '检索与智能体', count: 2 }, { name: '视觉研究', count: 1 }], sources: { local: papers.length }, untagged: 0 });
         if (name === '/papers' && method === 'GET') {
           const query = (url.searchParams.get('q') || '').toLowerCase();
           const selected = papers.filter(p => p.title.toLowerCase().includes(query) && (!url.searchParams.get('status') || p.status === url.searchParams.get('status')) && (!url.searchParams.get('tag') || p.tag === url.searchParams.get('tag')));
           return respond({ papers: selected, total: selected.length });
         }
-        if (name === '/sessions') return respond({ sessions: [] });
+        if (name === '/sessions' && method === 'GET') return respond({ sessions });
+        if (name === '/sessions' && method === 'POST') return respond(createSession(body.title), 201);
+        if (name.startsWith('/sessions/') && name.endsWith('/messages')) { const sid = name.split('/')[2]; return respond({ session_id: sid, paper_ids: scopes[sid] ?? null, messages: messages[sid] ?? [] }); }
+        if (name === '/chat') {
+          const sid = body.session_id || createSession(body.message).id;
+          scopes[sid] = body.paper_ids;
+          assert.deepEqual(body.paper_ids, ['local:demo-1', 'local:demo-2']);
+          const comparison = body.action === 'compare' ? { papers: papers.slice(0, 2).map(p => ({ paper_id: p.source_id, title: p.title, field_evidence: fields(p) })), comparability: { pairs: [{ paper_ids: body.paper_ids, metrics: [{ left_metric: 'Recall@10', right_metric: 'Recall@20', missing_conditions: ['评估协议'], different_conditions: ['指标名称/参数'] }] }] } } : null;
+          const reply = comparison ? '所选论文比较记录。' : '使用 Synthetic-A 的固定测试划分 [1]。';
+          const sources = comparison ? [] : [{ n: [1], paper_id: 'local:demo-1', title: titles[0], section: '4 Experiments', page: 3, chunks: [{ n: 1, chunk_id: 'local:demo-1::0', page: 3, text: 'Synthetic-A uses a fixed test split.' }] }];
+          messages[sid].push({ role: 'user', content: body.message, notes: [], details: { paper_ids: body.paper_ids, action: body.action } }, { role: 'assistant', content: reply, sources, notes: [], details: { paper_ids: body.paper_ids, comparison } });
+          sessions.find(s => s.id === sid).message_count = messages[sid].length;
+          return respond({ session_id: sid, intent: comparison ? 'compare' : 'qa', reply, sources, comparison, notes: [], new_papers: [] });
+        }
         const submittedTask = submitted && { ...task, id: 'submitted-demo', task: submitted, status: submittedPending ? 'waiting_confirm' : 'done', pending_confirm: submittedPending ? { count: 1, titles: ['离线示例操作'] } : null, answer: submittedPending ? '' : '测试任务确认已拒绝。' };
         if (name === '/agent/tasks' && method === 'GET') return respond({ tasks: submittedTask ? [submittedTask, task] : [task] });
-        if (name === '/agent/tasks' && method === 'POST') { submitted = body.task; return respond({ ...task, id: 'submitted-demo', task: submitted, status: 'running', pending_confirm: null, answer: '' }); }
+        if (name === '/agent/tasks' && method === 'POST') {
+          submitted = body.task;
+          if (body.session_id) { scopes[body.session_id] = body.allowed_paper_ids; messages[body.session_id].push({ role: 'user', content: body.task, notes: [] }, { role: 'assistant', content: '', notes: [], details: { task_id: 'submitted-demo', action: 'execute' } }); }
+          return respond({ ...task, id: 'submitted-demo', task: submitted, status: 'running', pending_confirm: null, answer: '' });
+        }
         if (name === '/agent/tasks/submitted-demo/events') return route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'data: ' + JSON.stringify({ type: 'snapshot', ...submittedTask }) + '\n\n' });
         if (name === '/agent/tasks/submitted-demo/confirm') { assert.equal(body.approve, false); submittedPending = false; return respond({ ok: true }); }
         if (name === '/agent/tasks/submitted-demo') return respond(submittedTask);
@@ -116,16 +145,20 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       await page.getByRole('checkbox', { name: `选择 ${titles[1]}`, exact: true }).check();
       await page.getByRole('button', { name: '比较所选论文', exact: true }).click();
       await page.getByRole('textbox', { name: '研究问题' }).fill('比较数据划分和指标参数');
-      await page.getByRole('button', { name: '比较所选论文', exact: true }).click();
+      await page.getByRole('button', { name: '开始比较', exact: true }).click();
       await page.getByRole('heading', { name: '论文比较与原文依据' }).waitFor();
       await page.screenshot({ path: path.join(output, `comparison-${profile}.png`), fullPage: true });
       await noOverflow('comparison');
-      await page.getByRole('button', { name: '文献问答', exact: true }).click();
-      await page.getByRole('button', { name: '查找答案', exact: true }).click();
-      await page.getByRole('heading', { name: '问答结果', exact: true }).waitFor();
-      await page.getByRole('button', { name: '复制答案与来源', exact: true }).click();
+      assert.equal(await page.getByRole('combobox', { name: '本次操作', exact: true }).inputValue(), 'chat');
+      await page.getByRole('textbox', { name: '研究问题' }).fill('这些论文的数据如何划分？');
+      await page.getByRole('button', { name: '发送', exact: true }).click();
+      await page.getByText('使用 Synthetic-A 的固定测试划分 [1]。', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '复制答案与来源', exact: true }).last().click();
       await page.getByRole('status').filter({ hasText: '已复制答案与来源。' }).waitFor();
       assert.match(await page.evaluate(() => window.__copiedAnswer), /local:demo-1/);
+      await page.locator('.research-turn.bot').last().getByText('查看原文证据（1 段）', { exact: true }).click();
+      const originalLink = page.getByRole('link', { name: '打开原 PDF 第 3 页', exact: true });
+      await originalLink.waitFor(); assert.match(await originalLink.getAttribute('href'), /local%3Ademo-1\/file#page=3$/);
       checks.push({ profile, view: 'copy-sources', citationsPreserved: true });
       await nav('任务记录').click();
       await page.getByRole('heading', { name: '任务记录', exact: true }).waitFor();
@@ -135,9 +168,26 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       await page.getByText('已拒绝示例操作。', { exact: true }).waitFor();
       await page.screenshot({ path: path.join(output, `tasks-${profile}.png`), fullPage: true });
       await noOverflow('tasks');
+      const submissionsBeforeReplay = requests.filter(r => r.method === 'POST' && r.path === '/agent/tasks').length;
+      await page.getByRole('button', { name: /离线成功回放示例/ }).click();
+      await page.locator('.task-detail').getByText('目标已核验', { exact: true }).waitFor();
+      await page.locator('.task-detail').getByText('查看原文证据（1 段）', { exact: true }).click();
+      await page.getByText('Original fixture metric is 0.5.', { exact: true }).waitFor();
+      await page.locator('.task-detail').getByText('调用明细与统计范围 · 1 次', { exact: true }).click();
+      await page.locator('.task-detail').getByText('未知', { exact: true }).waitFor();
+      const download = page.waitForEvent('download');
+      await page.locator('.task-detail').getByRole('button', { name: '导出记录', exact: true }).click();
+      assert.match((await download).suggestedFilename(), /offline-success/);
+      checks.push({ profile, view: 'goal-review', evidenceVisible: true, unknownUsageVisible: true, exportWorks: true });
+      await page.getByRole('button', { name: /离线失败回放示例/ }).click();
+      await page.locator('.task-detail').getByText('目标未达成', { exact: true }).waitFor();
+      await page.getByText('所选论文尚未建立索引', { exact: true }).waitFor();
+      assert.equal(requests.filter(r => r.method === 'POST' && r.path === '/agent/tasks').length, submissionsBeforeReplay);
+      await noOverflow('failed-demo-review');
+      checks.push({ profile, view: 'failed-goal-review', honestFailure: true, replayDoesNotExecute: true });
       await nav('研究助手').click();
-      assert.equal(await page.getByRole('textbox', { name: '研究问题' }).inputValue(), '比较数据划分和指标参数');
-      await page.getByRole('heading', { name: '问答结果', exact: true }).waitFor();
+      assert.equal(await page.getByRole('textbox', { name: '研究问题' }).inputValue(), '');
+      await page.getByText('使用 Synthetic-A 的固定测试划分 [1]。', { exact: true }).waitFor();
       await nav('文献库').click();
       await page.getByRole('button', { name: titles[0], exact: true }).click();
       await page.getByRole('heading', { name: '一句话总结', exact: true }).waitFor();
@@ -195,36 +245,40 @@ function detail(p) { return { ...p, experiment: { research_goal: '研究带证�
       checks.push({ profile, view: 'deep-link-back', restored: true });
 
       await nav('研究助手').click();
-      await page.getByRole('button', { name: '执行任务', exact: true }).click();
-      const historyPane = page.getByRole('complementary', { name: 'Agent 任务历史' });
+      const historyPane = page.getByRole('complementary', { name: '研究历史' });
+      await historyPane.locator('.execution-history > summary').click();
       await historyPane.getByRole('button', { name: /确认后执行一个示例操作/ }).click();
-      await page.locator('.agent-answer').getByText('已拒绝示例操作。', { exact: true }).waitFor();
+      await page.locator('.conversation-task').getByText('已拒绝示例操作。', { exact: true }).waitFor();
       const paneBox = await historyPane.boundingBox(), chatBox = await page.locator('.assistant .chat').boundingBox();
       assert.ok(paneBox.x + paneBox.width <= chatBox.x + 1);
       await noOverflow('agent-history-left');
       await page.screenshot({ path: path.join(output, `agent-history-${profile}.png`), fullPage: true });
-      await historyPane.getByRole('button', { name: '＋ 新任务', exact: true }).click();
-      await page.getByPlaceholder('描述要执行的目标，提交后开始…').fill('离线提交的目标');
-      await page.getByRole('button', { name: '提交任务', exact: true }).click();
+      await historyPane.getByRole('button', { name: '＋ 新对话', exact: true }).click();
+      await page.getByRole('combobox', { name: '本次操作', exact: true }).selectOption('execute');
+      await page.locator('.execution-options > summary').click();
+      await page.getByRole('combobox', { name: '结果验收方式', exact: true }).selectOption('preview');
+      await page.getByRole('textbox', { name: '研究问题' }).fill('离线提交的目标');
+      await page.getByRole('button', { name: '提交执行', exact: true }).click();
       await page.locator('.assistant .confirm-box').waitFor();
       await historyPane.getByRole('button', { name: /确认后执行一个示例操作/ }).click();
-      await page.locator('.agent-answer').getByText('已拒绝示例操作。', { exact: true }).waitFor();
-      await page.getByRole('button', { name: '返回运行中的任务', exact: true }).waitFor();
-      assert.equal(await historyPane.getByRole('button', { name: '＋ 新任务', exact: true }).isDisabled(), true);
+      await page.locator('.conversation-task').getByText('已拒绝示例操作。', { exact: true }).waitFor();
+      await page.getByRole('button', { name: '查看进度', exact: true }).waitFor();
+      assert.equal(await historyPane.getByRole('button', { name: '＋ 新对话', exact: true }).isDisabled(), false);
       await page.waitForTimeout(1500); // Allow the SSE fallback poll to arrive while viewing history.
-      assert.equal(await page.locator('.agent-answer').getByText('已拒绝示例操作。', { exact: true }).isVisible(), true);
-      await page.getByRole('button', { name: '返回运行中的任务', exact: true }).click();
+      assert.equal(await page.locator('.conversation-task').getByText('已拒绝示例操作。', { exact: true }).isVisible(), true);
+      await page.getByRole('button', { name: '查看进度', exact: true }).click();
       await page.getByRole('button', { name: '拒绝', exact: true }).click();
       await page.getByText('测试任务确认已拒绝。', { exact: true }).waitFor();
-      await historyPane.getByRole('button', { name: '＋ 新任务', exact: true }).click();
+      await historyPane.getByRole('button', { name: '＋ 新对话', exact: true }).click();
       checks.push({ profile, view: 'running-task-history', historyDoesNotInterrupt: true });
 
-      await page.getByRole('button', { name: '问答与比较', exact: true }).click();
-      await page.getByRole('button', { name: '连续对话', exact: true }).click();
-      await page.getByPlaceholder('追问库内论文或讨论研究方向…').fill('查找两篇综述并保存题录');
+      await page.getByRole('textbox', { name: '研究问题' }).fill('查找两篇综述并保存题录');
       const submitsBeforeHandoff = requests.filter(r => r.method === 'POST' && r.path === '/agent/tasks').length;
-      await page.getByRole('button', { name: '将需求转为任务（先预填）', exact: true }).click();
-      assert.equal(await page.getByPlaceholder('描述要执行的目标，提交后开始…').inputValue(), '查找两篇综述并保存题录');
+      const beforeLayout = await page.locator('.assistant .chat').boundingBox();
+      await page.getByRole('combobox', { name: '本次操作', exact: true }).selectOption('execute');
+      assert.equal(await page.getByRole('textbox', { name: '研究问题' }).inputValue(), '查找两篇综述并保存题录');
+      const afterLayout = await page.locator('.assistant .chat').boundingBox();
+      assert.deepEqual(beforeLayout, afterLayout);
       assert.equal(requests.filter(r => r.method === 'POST' && r.path === '/agent/tasks').length, submitsBeforeHandoff);
       checks.push({ profile, view: 'chat-task-handoff', prefillOnly: true });
 

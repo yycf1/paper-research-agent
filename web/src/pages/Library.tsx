@@ -119,6 +119,7 @@ export default function Library({
   >(null);
   const [deleteProgress, setDeleteProgress] = useState(0);
   const knownTitles = useRef(new Map<string, string>());
+  const requestVersion = useRef(0);
 
   const loadTags = useCallback(
     () =>
@@ -148,6 +149,7 @@ export default function Library({
   }, [downloadJob, onChanged]);
 
   const load = useCallback(async () => {
+    const version = ++requestVersion.current;
     setLoading(true);
     setErr("");
     try {
@@ -158,13 +160,14 @@ export default function Library({
         q: q || undefined,
         limit: PAGE_SIZE,
       });
+      if (version !== requestVersion.current) return;
       data.papers.forEach((p) => knownTitles.current.set(p.source_id, p.title));
       setPapers(data.papers);
       setTotal(data.total);
     } catch (e) {
-      setErr(String(e));
+      if (version === requestVersion.current) setErr(String(e));
     } finally {
-      setLoading(false);
+      if (version === requestVersion.current) setLoading(false);
     }
   }, [status, tag, untaggedOnly, q]);
 
@@ -184,6 +187,7 @@ export default function Library({
   }, [qInput]);
 
   const loadMore = async () => {
+    const version = requestVersion.current;
     setErr("");
     try {
       const data = await api.papers({
@@ -194,6 +198,7 @@ export default function Library({
         limit: PAGE_SIZE,
         offset: papers.length,
       });
+      if (version !== requestVersion.current) return;
       data.papers.forEach((p) => knownTitles.current.set(p.source_id, p.title));
       setPapers((cur) => [...cur, ...data.papers]);
     } catch (e) {
@@ -293,7 +298,7 @@ export default function Library({
       ]);
       setTag("");
       setUntaggedOnly(false);
-      await load();
+      if (!tag && !untaggedOnly) await load();
       onChanged();
       loadTags();
     } catch (e) {
@@ -328,8 +333,8 @@ export default function Library({
     try {
       await api.renameTag(oldName, trimmed);
       if (tag === oldName) setTag(trimmed);
+      else void load();
       loadTags();
-      load();
     } catch (e) {
       setErr(String(e));
     }
@@ -346,8 +351,8 @@ export default function Library({
     try {
       await api.deleteTag(name);
       if (tag === name) setTag("");
+      else void load();
       loadTags();
-      load();
     } catch (e) {
       setErr(String(e));
     }
@@ -425,6 +430,16 @@ export default function Library({
     }
   };
 
+  const downloadSelected = async () => {
+    setBulkBusy(true); setErr("");
+    try {
+      setDownloadJob(await api.download([...checked]));
+      setDownloadPollError("");
+      setNotes(["已提交所选论文的全文下载；不自动解析或调用模型。"]);
+    } catch (e) { setErr(String(e)); }
+    finally { setBulkBusy(false); }
+  };
+
   const deleteSelected = async () => {
     if (!deleteTargets || bulkBusy) return;
     const targets = [...deleteTargets];
@@ -436,7 +451,8 @@ export default function Library({
     for (const [index, target] of targets.entries()) {
       try {
         const result = await api.deletePaper(target.id);
-        if (!result.ok) throw new Error("服务未确认删除成功");
+        if (result.cleanup_pending) errors.push(`${target.title}：记录已移除，部分产物待清理，可在任务记录中重试。`);
+        else if (!result.ok) throw new Error("服务未确认删除成功");
       } catch (e) {
         failed.add(target.id);
         errors.push(`${target.title}：${e}`);
@@ -812,6 +828,8 @@ export default function Library({
         {checked.size > 0 && (
           <div className="lib-bulk">
             <span className="bulk-count">已选 {checked.size} 篇</span>
+            <button disabled={bulkBusy || checked.size > 200 || downloadJob?.status === "running"} title="每批最多下载 200 篇" onClick={() => void downloadSelected()}>仅下载所选全文</button>
+            {checked.size > 200 && <span className="hint">每批下载最多 200 篇，请减少勾选。</span>}
             <button
               className="primary"
               disabled={bulkBusy || checked.size < 2 || checked.size > 6}
@@ -881,13 +899,14 @@ export default function Library({
             ))}
           </div>
         )}
-        {view === "discover" && downloadJob && (
+        {downloadJob && (
           <DownloadProgress
             job={downloadJob}
             onOpenDetail={(id) => onOpenDetail(id)}
+            onRetried={(job) => { setDownloadJob(job); setDownloadPollError(""); }}
           />
         )}
-        {view === "discover" && downloadPollError && (
+        {downloadPollError && (
           <div className="local-error" role="alert">
             {downloadPollError}
             <button
@@ -1145,7 +1164,7 @@ export default function Library({
                   <input
                     type="checkbox"
                     checked={selected.has(c.source_id)}
-                    disabled={!!c.duplicate_of}
+                    disabled={ingesting}
                     onChange={() => toggleCandidate(c.source_id)}
                   />
                   <span className="cand-title">
@@ -1157,7 +1176,7 @@ export default function Library({
                     </span>
                     {c.duplicate_of && (
                       <span className="tag" style={{ marginLeft: 6 }}>
-                        库内已有
+                        库内已有，可勾选补全文
                       </span>
                     )}
                   </span>

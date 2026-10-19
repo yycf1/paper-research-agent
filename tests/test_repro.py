@@ -84,3 +84,32 @@ def test_generate_repro_plan_unknown_paper(tmp_path):
             generate_repro_plan("openalex:NOPE", cfg=_cfg(tmp_path), lib=lib, chat_fn=lambda m, **k: ("x", {}))
     finally:
         lib.close()
+
+
+def test_unknown_asset_availability_is_repaired_once(tmp_path):
+    lib = _seed_analyzed(tmp_path)
+    calls = []
+    def fake_chat(messages, **kwargs):
+        calls.append(messages)
+        return ("## 复现目标\n代码与数据集均未公开。" if len(calls) == 1 else
+                "## 复现目标\n数据集公开情况未确认。建议（非原文事实）：先核对资产。"), {"prompt": 10, "completion": 5}
+    try:
+        plan, usage = generate_repro_plan("openalex:W1", cfg=_cfg(tmp_path), lib=lib, chat_fn=fake_chat)
+        assert len(calls) == 2 and "未确认" in plan and "均未公开" not in plan
+        assert usage["prompt"] == 20 and usage["completion"] == 10
+    finally:
+        lib.close()
+
+
+def test_unsupported_asset_claim_is_not_persisted_after_failed_repair(tmp_path):
+    lib = _seed_analyzed(tmp_path)
+    cfg = _cfg(tmp_path)
+    output = repro_plan_path(cfg, "openalex:W1")
+    output.write_text("previous valid plan", encoding="utf-8")
+    try:
+        with pytest.raises(RuntimeError, match="未保存"):
+            generate_repro_plan("openalex:W1", cfg=cfg, lib=lib,
+                                chat_fn=lambda *a, **kw: ("代码与数据集均未公开。", {}))
+        assert output.read_text(encoding="utf-8") == "previous valid plan"
+    finally:
+        lib.close()

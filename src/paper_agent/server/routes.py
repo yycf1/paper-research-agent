@@ -6,8 +6,10 @@ import json
 import shutil
 import uuid
 from pathlib import Path
+from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from paper_agent import __version__, paths
@@ -28,13 +30,17 @@ from paper_agent.rag.vectorstore import VectorStore
 from paper_agent.server import agent_jobs, jobs
 from paper_agent.services.acquisition import download_selected_papers
 from paper_agent.services.assistant import handle_message, suggest_directions
-from paper_agent.services.facts import load_bound_fields
+from paper_agent.services.facts import load_bound_fields, save_fact_review
+from paper_agent.extraction.evidence import FactReview
 from paper_agent.services.library_ops import (
+    CleanupPending,
     UnsupportedFormat,
+    attach_fulltext,
     delete_paper,
     import_local_file,
 )
 from paper_agent.services.process import process_paper
+from paper_agent.services.locks import paper_lock
 from paper_agent.services.repro import generate_repro_plan
 from paper_agent.services.search import PreviewResult, ingest_papers, search_sources
 
@@ -57,7 +63,8 @@ def open_lib() -> Library:
 
 
 def _retriever() -> Retriever:
-    return Retriever(VectorStore(paths.vector_dir(load_config())))
+    cfg = load_config()
+    return Retriever(VectorStore(paths.vector_dir(cfg)), cfg=cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +92,8 @@ def record_to_dict(rec: PaperRecord, *, with_abstract: bool = False) -> dict:
     out = paper_to_dict(rec.paper)
     out["abstract"] = rec.paper.abstract if with_abstract else ""
     out.update({"status": rec.status, "error": rec.error, "added_at": rec.added_at, "tag": rec.tag,
-                "has_local_file": bool(rec.pdf_path and Path(rec.pdf_path).is_file())})
+                "has_local_file": bool(rec.pdf_path and Path(rec.pdf_path).is_file()),
+                "local_file_type": Path(rec.pdf_path).suffix.lower().lstrip(".") if rec.pdf_path else None})
     return out
 
 
@@ -173,10 +181,12 @@ class TagRename(BaseModel):
     name: str = Field(min_length=1, max_length=60)
 
 
-@router.patch("/tags/{name}")
+@router.patch("/tags/{name:path}")
 def api_rename_tag(name: str, req: TagRename, lib: Library = Depends(open_lib)) -> dict:
     """重命名分组，组内论文标签同步更新。"""
     new_name = req.name.strip()
+    if not new_name:
+        raise HTTPException(400, "分组名称不能为空")
     names = {g["name"] for g in lib.groups()}
     if name not in names:
         raise HTTPException(404, f"分组不存在：{name}")
@@ -189,7 +199,7 @@ def api_rename_tag(name: str, req: TagRename, lib: Library = Depends(open_lib)) 
     return {"name": new_name, "count": moved}
 
 
-@router.delete("/tags/{name}")
+@router.delete("/tags/{name:path}")
 def api_delete_tag(name: str, lib: Library = Depends(open_lib)) -> dict:
     """删除分组：组内论文全部回到「未分组」（论文本身不删）。"""
     if name not in {g["name"] for g in lib.groups()}:
@@ -207,6 +217,23 @@ def api_paper_facts(sid: str, lib: Library = Depends(open_lib)) -> dict:
     store = VectorStore(paths.vector_dir(cfg))
     result = load_bound_fields(sid, cfg, store.all_hits(paper_id=sid))
     return {"title": rec.paper.title, **result}
+
+
+class ReviewRequest(FactReview):
+    source_version: str = Field(min_length=1)
+
+
+@router.post("/papers/{sid}/facts/reviews")
+def api_review_fact(sid: str, req: ReviewRequest, lib: Library = Depends(open_lib)) -> dict:
+    sid = _resolve_sid(sid, lib)
+    cfg = load_config()
+    review = FactReview.model_validate(req.model_dump(exclude={"source_version"}))
+    try:
+        with paper_lock(lib, sid):
+            hits = VectorStore(paths.vector_dir(cfg)).all_hits(paper_id=sid)
+            return save_fact_review(sid, cfg, lib, hits, review, req.source_version)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/papers/{sid}")
@@ -350,23 +377,55 @@ def api_ingest(req: IngestRequest, lib: Library = Depends(open_lib)) -> dict:
     result = ingest_papers(papers, lib=lib, tag=req.tag or None)
     download_job = None
     if req.download_fulltext:
-        ids = list(dict.fromkeys(p.source_id for p in req.papers))
-        cfg = load_config()
-
-        def _download(progress: dict) -> dict:
-            worker_lib = paths.library(cfg)
-            try:
-                return download_selected_papers(ids, cfg, worker_lib, progress)
-            finally:
-                worker_lib.close()
-
-        download_job = jobs.submit("download_papers", _download, result={"total": len(ids), "completed": 0, "items": []}).to_dict()
+        download_job = _submit_download(result.selected_ids, load_config()).to_dict()
     return {
         "ingested": len(result.new_papers),
         "duplicates": result.duplicates,
         "papers": [record_to_dict(r) for r in result.new_papers],
         "download_job": download_job,
+        "selected_ids": result.selected_ids,
     }
+
+
+def _submit_download(ids: list[str], cfg: dict, *, retry_of: str | None = None) -> jobs.Job:
+    ids = list(dict.fromkeys(ids))
+
+    def run(progress: dict) -> dict:
+        worker_lib = paths.library(cfg)
+        try:
+            return download_selected_papers(ids, cfg, worker_lib, progress)
+        finally:
+            worker_lib.close()
+
+    return jobs.registry_for(cfg).submit("download_papers", run, result={
+        "source_ids": ids, "retry_of": retry_of, "total": len(ids), "completed": 0,
+        "items": [{"source_id": sid, "title": "", "status": "pending", "detail": "等待下载"} for sid in ids],
+    })
+
+
+class DownloadRequest(BaseModel):
+    source_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+@router.post("/papers/download", status_code=202)
+def api_download_papers(req: DownloadRequest, lib: Library = Depends(open_lib)) -> dict:
+    ids = [_resolve_sid(sid, lib) for sid in req.source_ids]
+    return _submit_download(ids, load_config()).to_dict()
+
+
+@router.post("/jobs/{job_id}/retry", status_code=202)
+def api_retry_download(job_id: str) -> dict:
+    cfg = load_config()
+    previous = jobs.registry_for(cfg).get(job_id)
+    if previous is None:
+        raise HTTPException(404, "任务不存在")
+    if previous.kind != "download_papers" or previous.status == "running":
+        raise HTTPException(409, "仅可重试已结束或中断的下载任务")
+    items = previous.to_dict()["result"].get("items", [])
+    ids = [row["source_id"] for row in items if row.get("status") in {"failed", "no_link", "pending", "running", "interrupted"}]
+    if not ids:
+        raise HTTPException(409, "没有可重试的未完成项")
+    return _submit_download(ids, cfg, retry_of=job_id).to_dict()
 
 
 class PaperTagUpdate(BaseModel):
@@ -483,9 +542,53 @@ def api_paper_repro_file(sid: str, name: str = Query(""), lib: Library = Depends
 @router.delete("/papers/{sid}")
 def api_delete_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
     """全链删除：账本 + 向量块 + 原文/解析/知识产物。"""
-    sid = _resolve_sid(sid, lib)
-    ok = delete_paper(sid, cfg=load_config(), lib=lib)
+    if sid not in {row["source_id"] for row in lib.pending_deletions()}:
+        sid = _resolve_sid(sid, lib)
+    try:
+        ok = delete_paper(sid, cfg=load_config(), lib=lib)
+    except CleanupPending as exc:
+        return JSONResponse(status_code=202, content={"ok": False, "removed": True, "cleanup_pending": True,
+                                                      "source_id": sid, "detail": str(exc)})
     return {"ok": ok, "source_id": sid}
+
+
+@router.get("/maintenance/cleanup")
+def api_pending_cleanup(lib: Library = Depends(open_lib)) -> dict:
+    return {"items": lib.pending_deletions()}
+
+
+@router.post("/maintenance/cleanup")
+def api_retry_cleanup(lib: Library = Depends(open_lib)) -> dict:
+    cleaned = 0
+    for row in lib.pending_deletions():
+        try:
+            delete_paper(row["source_id"], cfg=load_config(), lib=lib)
+            cleaned += 1
+        except CleanupPending:
+            pass
+    return {"cleaned": cleaned, "remaining": len(lib.pending_deletions()), "items": lib.pending_deletions()}
+
+
+@router.get("/papers/{sid}/file")
+def api_original_file(sid: str, lib: Library = Depends(open_lib)):
+    sid = _resolve_sid(sid, lib)
+    rec = lib.get(sid)
+    path = Path(rec.pdf_path).resolve() if rec.pdf_path else None
+    root = (paths.papers_dir(load_config()) / safe_dirname(sid)).resolve()
+    if path is None or not path.is_file():
+        raise HTTPException(404, "尚未保存本地全文，请先下载或给此记录上传全文")
+    base = paths.papers_dir(load_config()).resolve()
+    if root == base or not root.is_relative_to(base) or not path.is_relative_to(root) or path.suffix.lower() not in {".pdf", ".docx"}:
+        raise HTTPException(403, "全文路径不在该论文的受管目录中")
+    pdf = path.suffix.lower() == ".pdf"
+    return FileResponse(path, media_type="application/pdf" if pdf else "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        filename=path.name, content_disposition_type="inline" if pdf else "attachment")
+
+
+@router.post("/papers/{sid}/fulltext")
+def api_attach_fulltext(sid: str, file: UploadFile = File(...), replace_existing: bool = Form(False), lib: Library = Depends(open_lib)) -> dict:
+    sid = _resolve_sid(sid, lib)
+    return _receive_upload(file, lib, target_sid=sid, replace_existing=replace_existing)
 
 
 @router.post("/papers/upload", status_code=201)
@@ -498,6 +601,10 @@ def api_upload_paper(
     每次上传落在自己的临时子目录（防同名并发互覆、失败清理不伤他文件），
     导入完成即清理——import_local_file 已把内容复制进 papers/{sid}/。
     """
+    return _receive_upload(file, lib)
+
+
+def _receive_upload(file: UploadFile, lib: Library, *, target_sid: str | None = None, replace_existing: bool = False) -> dict:
     cfg = load_config()
     name = file.filename or "document.pdf"
     upload_dir = paths.data_dir(cfg) / "uploads" / uuid.uuid4().hex[:8]
@@ -512,7 +619,12 @@ def api_upload_paper(
                     raise HTTPException(413, "文件超过 50MB 上限")
                 out.write(chunk)
         try:
-            rec, is_new = import_local_file(dest, cfg=cfg, lib=lib)
+            if target_sid:
+                rec, is_new = attach_fulltext(dest, target_sid, cfg=cfg, lib=lib, replace_existing=replace_existing), False
+            else:
+                rec, is_new = import_local_file(dest, cfg=cfg, lib=lib)
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except UnsupportedFormat as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"is_new": is_new, "paper": record_to_dict(rec, with_abstract=True)}
@@ -536,6 +648,15 @@ def api_ask(req: AskRequest, lib: Library = Depends(open_lib)) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     scope = {"paper_ids": list(ids)} if ids is not None else {}
+    # Explicit catalogue requests do not require a fulltext index. Keep the UI-selected scope.
+    from paper_agent.graph.route import _fast_path_intent
+    direct = _fast_path_intent(req.question)
+    if direct and direct['intent'] in ('catalogue', 'status', 'help'):
+        reply = handle_message(req.question, lib=lib, retriever=_retriever() if direct.get('catalogue', {}).get('operation') == 'methods' else None,
+                                params={}, cfg=load_config(), allow_ingest=False,
+                                paper_ids=list(ids) if ids is not None else None, route=direct)
+        return {'answer': reply.reply, 'sources': reply.sources, 'answer_status': reply.answer_status or direct['intent'],
+                'notes': reply.notes, 'telemetry': reply.telemetry, 'routing': reply.routing}
     retriever = _retriever()
     if retriever.store.count() == 0:
         raise HTTPException(400, "向量库为空：先检索并处理论文建立索引")
@@ -548,18 +669,47 @@ def api_ask(req: AskRequest, lib: Library = Depends(open_lib)) -> dict:
         raise HTTPException(503, str(exc)) from exc
     return {"answer": answer, "sources": sources_from_hits(hits),
             "answer_status": trace.get("answer_status"), "citation_check": trace.get("citation_check"),
+            "telemetry": trace.get("telemetry", {}),
             "retrieval_notes": trace.get("retrieval", {}).get("notes", [])}
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     session_id: str | None = None
+    action: Literal["chat", "compare"] = "chat"
+    # Omitted: continue the saved scope. Explicit null: return to the whole library.
+    paper_ids: list[str] | None = Field(None, min_length=1, max_length=6)
 
 
 class CompareRequest(BaseModel):
     topic: str = Field(min_length=1, max_length=500)
     paper_ids: list[str] = Field(min_length=2, max_length=6)
     k_per_paper: int = Field(3, ge=1, le=5)
+
+
+def _conversation_history(messages: list[dict], ids: list[str] | None) -> list[tuple[str, str]]:
+    """Only the last three pairs in the current paper scope can supply context."""
+    pairs = []
+    for question, answer in zip(messages, messages[1:]):
+        if question["role"] != "user" or answer["role"] != "assistant":
+            continue
+        details = answer.get("details", {})
+        saved_ids = details.get("paper_ids")
+        if (saved_ids is None) != (ids is None) or set(saved_ids or []) != set(ids or []):
+            continue
+        pairs.append((question, answer))
+    history = []
+    for question, answer in pairs[-3:]:
+        details = answer.get("details", {})
+        content = answer["content"]
+        if task_id := details.get("task_id"):
+            try:
+                task = api_agent_task(task_id)
+                content = task.get("answer") or task.get("error") or "操作尚未结束"
+            except HTTPException:
+                content = "关联的执行记录暂不可用"
+        history.append((question["content"][:2000], content[:6000]))
+    return history
 
 
 @router.post("/compare")
@@ -583,6 +733,9 @@ def api_compare(req: CompareRequest, lib: Library = Depends(open_lib)) -> dict:
 
 @router.post("/chat")
 def api_chat(req: ChatRequest, lib: Library = Depends(open_lib)) -> dict:
+    from paper_agent.agent.scope import PaperScope
+    from paper_agent.services.assistant import AssistantReply
+
     cfg = load_config()
     p = cfg.get("pipeline", {}) or {}
     params = {
@@ -594,36 +747,64 @@ def api_chat(req: ChatRequest, lib: Library = Depends(open_lib)) -> dict:
     store = ChatStore(paths.data_dir(cfg) / "library.db")
     try:
         sid = req.session_id
+        if sid is not None and not any(s["id"] == sid for s in store.list_sessions()):
+            raise HTTPException(404, f"未找到会话：{sid}（可能已删除）")
+        previous_scope = store.get_scope(sid) if sid else None
+        requested_scope = req.paper_ids if "paper_ids" in req.model_fields_set else previous_scope
+        try:
+            allowed = PaperScope(lib, allowed_paper_ids=requested_scope).allowed
+            ids = list(allowed) if allowed is not None else None
+            if req.action == "compare" and (ids is None or len(ids) < 2):
+                raise ValueError("请先选择 2～6 篇不同论文进行比较")
+            if req.action == "compare" and len(req.message) > 500:
+                raise ValueError("比较问题最多 500 字")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if sid is None:
             sid = store.create_session(title=req.message)
-        elif not any(s["id"] == sid for s in store.list_sessions()):
-            raise HTTPException(404, f"未找到会话：{sid}（可能已删除）")
         prior = store.get_messages(sid)
-        store.append_message(sid, role="user", content=req.message)
-        # 近几轮问答作为语境传给问答链（指代消解），取相邻的 (user, assistant) 对
-        history = [
-            (prior[i]["content"], prior[i + 1]["content"])
-            for i in range(len(prior) - 1)
-            if prior[i]["role"] == "user" and prior[i + 1]["role"] == "assistant"
-        ][-3:]
-
-        reply = handle_message(
-            req.message, lib=lib, retriever=_retriever(), params=params, cfg=cfg,
-            history=history, allow_ingest=False,
-        )
+        history = _conversation_history(prior, ids)
+        comparison = None
+        if req.action == "compare":
+            from paper_agent.observability import CallLedger, task_observation, call_stage
+            ledger = CallLedger()
+            with task_observation(ledger, cfg), call_stage("comparison.retrieve"):
+                comparison = api_compare(CompareRequest(topic=req.message, paper_ids=ids), lib)
+            lines = ["已整理所选论文的研究目标、数据集和指标候选。请结合原文核对，条件不齐时不能直接排名。"]
+            for paper in comparison.get("papers", []):
+                fields = paper.get("field_evidence", {}).get("fields", {})
+                values = {k: [f.get("normalized_value") for f in v] for k, v in fields.items()}
+                lines.append(f"{paper['title']}：" + json.dumps(values, ensure_ascii=False)[:1800])
+            reply = AssistantReply("compare", "\n\n".join(lines), telemetry=ledger.summary())
+        else:
+            reply = handle_message(
+                req.message, lib=lib, retriever=_retriever(), params=params, cfg=cfg,
+                history=history, allow_ingest=False, paper_ids=ids,
+            )
+        details = {"paper_ids": ids, "action": req.action, "comparison": comparison,
+                   "telemetry": reply.telemetry, "answer_status": reply.answer_status}
+        store.set_scope(sid, ids)
+        store.append_message(sid, role="user", content=req.message,
+                             details={"paper_ids": ids, "action": req.action})
         store.append_message(
             sid, role="assistant", content=reply.reply, intent=reply.intent,
             understanding=reply.understanding, notes=reply.notes,
             sources=reply.sources,
+            details=details,
         )
         return {
             "session_id": sid,
             "intent": reply.intent,
+            "routing": reply.routing,
+            "telemetry": reply.telemetry,
+            "answer_status": reply.answer_status,
             "reply": reply.reply,
             "understanding": reply.understanding,
             "notes": reply.notes,
             "new_papers": [record_to_dict(r) for r in reply.new_papers],
             "sources": reply.sources,
+            "paper_ids": ids,
+            "comparison": comparison,
         }
     finally:
         store.close()
@@ -663,7 +844,7 @@ def api_session_messages(sid: str) -> dict:
     try:
         if not any(s["id"] == sid for s in store.list_sessions()):
             raise HTTPException(404, f"未找到会话：{sid}")
-        return {"session_id": sid, "messages": store.get_messages(sid)}
+        return {"session_id": sid, "paper_ids": store.get_scope(sid), "messages": store.get_messages(sid)}
     finally:
         store.close()
 
@@ -789,7 +970,7 @@ def api_run_job(req: RunRequest) -> dict:
         state = run_pipeline(req.query, params)
         return {"stats": state["stats"], "notes": state["notes"], "selected": state["selected"]}
 
-    job = jobs.submit("run_pipeline", _run, result={"query": req.query, "params": params})
+    job = jobs.registry_for(cfg).submit("run_pipeline", _run, result={"query": req.query, "params": params})
     return job.to_dict()
 
 
@@ -812,21 +993,21 @@ def api_process_paper(sid: str, lib: Library = Depends(open_lib)) -> dict:
         finally:
             job_lib.close()
 
-    job = jobs.submit("process_paper", _run, result={"source_id": sid})
+    job = jobs.registry_for(load_config()).submit("process_paper", _run, result={"source_id": sid})
     return job.to_dict()
 
 
 @router.get("/jobs/{job_id}")
 def api_job(job_id: str) -> dict:
-    job = jobs.get(job_id)
+    job = jobs.registry_for(load_config()).get(job_id)
     if job is None:
-        raise HTTPException(404, f"未找到任务：{job_id}（或服务已重启）")
+        raise HTTPException(404, f"未找到任务：{job_id}")
     return job.to_dict()
 
 
 @router.get("/jobs")
 def api_jobs() -> dict:
-    return {"jobs": [j.to_dict() for j in jobs.list_jobs()]}
+    return {"jobs": [j.to_dict() for j in jobs.registry_for(load_config()).list_jobs()]}
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +1021,8 @@ class AgentTaskRequest(BaseModel):
     token_budget: int | None = Field(None, ge=1000)
     anchor_source_id: str | None = Field(None, max_length=100)  # M26：锚定论文（防续任务漂移）
     allowed_paper_ids: list[str] | None = Field(None, min_length=1, max_length=6)
+    acceptance: list[dict] | None = Field(None, max_length=12)
+    session_id: str | None = None
 
 
 @router.post("/agent/tasks", status_code=202)
@@ -852,17 +1035,35 @@ def api_agent_submit(req: AgentTaskRequest, lib: Library = Depends(open_lib)) ->
     循环层注入锚定约束、执行器收紧工具作用域。
     """
     from datetime import datetime
+    from paper_agent.agent.verification import validate_contract
 
+    try:
+        acceptance = validate_contract(req.acceptance)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    cfg = load_config()
+    requested_ids = req.allowed_paper_ids
+    prior = []
+    if req.session_id is not None:
+        store = ChatStore(paths.data_dir(cfg) / "library.db")
+        try:
+            if not any(s["id"] == req.session_id for s in store.list_sessions()):
+                raise HTTPException(404, "关联的对话不存在")
+            if "allowed_paper_ids" not in req.model_fields_set and not req.anchor_source_id:
+                requested_ids = store.get_scope(req.session_id)
+            prior = store.get_messages(req.session_id)
+        finally:
+            store.close()
     anchor = None
     if (req.anchor_source_id or "").strip():
         anchor = _resolve_sid(req.anchor_source_id.strip(), lib)
     from paper_agent.agent.scope import PaperScope
 
     try:
-        scope = PaperScope(lib, anchor=anchor, allowed_paper_ids=req.allowed_paper_ids)
+        scope = PaperScope(lib, anchor=anchor, allowed_paper_ids=requested_ids)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    cfg = load_config()
     trace_dir = paths.data_dir(cfg) / "traces" / "web"
     tid = uuid.uuid4().hex[:12]
     trace_path = trace_dir / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{tid}.jsonl"
@@ -875,7 +1076,20 @@ def api_agent_submit(req: AgentTaskRequest, lib: Library = Depends(open_lib)) ->
         task_id=tid,
         anchor=anchor,
         allowed_paper_ids=list(scope.allowed) if scope.allowed is not None else None,
+        acceptance=acceptance,
+        history=_conversation_history(prior, list(scope.allowed) if scope.allowed is not None else None),
     )
+    if req.session_id is not None:
+        store = ChatStore(paths.data_dir(cfg) / "library.db")
+        try:
+            ids = list(scope.allowed) if scope.allowed is not None else None
+            store.set_scope(req.session_id, ids)
+            store.append_message(req.session_id, role="user", content=req.task,
+                                 details={"paper_ids": ids, "action": "execute"})
+            store.append_message(req.session_id, role="assistant", content="已提交执行操作。",
+                                 intent="agent", details={"task_id": tid, "paper_ids": ids, "action": "execute"})
+        finally:
+            store.close()
     return state.to_dict(with_steps=False)
 
 
@@ -892,6 +1106,7 @@ def _history_task(path: Path, *, with_steps: bool) -> dict | None:
     allowed_paper_ids = None
     steps: list[dict] = []
     final_rec: dict | None = None
+    calls: list[dict] = []
     try:
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -909,10 +1124,12 @@ def _history_task(path: Path, *, with_steps: bool) -> dict | None:
                     allowed_paper_ids = rec.get("allowed_paper_ids")
                 elif kind == "step":
                     steps.append(
-                        {k: rec.get(k) for k in ("step", "tool", "arguments", "status", "detail", "duration_ms", "comparison")}
+                        {k: rec.get(k) for k in ("step", "tool", "arguments", "status", "detail", "duration_ms", "comparison", "observation")}
                     )
                 elif kind == "final":
                     final_rec = rec
+                elif kind == "call":
+                    calls.append({k: v for k, v in rec.items() if k != 'type'})
     except OSError:
         return None
     if not task_text and not steps and final_rec is None:
@@ -929,6 +1146,12 @@ def _history_task(path: Path, *, with_steps: bool) -> dict | None:
     else:
         # 逐步追加写的设计：缺 final 记录即进程中断，如实标注而不是伪装完成
         status, stopped, error = "error", "error", "轨迹缺少最终记录（服务中断）"
+    from paper_agent.observability import CallLedger
+    ledger = CallLedger()
+    ledger.calls = calls
+    telemetry = (final_rec or {}).get('telemetry') or (ledger.summary() if calls else {})
+    if not final_rec:
+        usage = {k: telemetry.get(k, 0) for k in ('prompt', 'completion')}
     out = {
         "id": _trace_task_id(path.stem),
         "task": task_text,
@@ -942,10 +1165,25 @@ def _history_task(path: Path, *, with_steps: bool) -> dict | None:
         "error": error,
         "pending_confirm": None,
         "ts": path.stat().st_mtime,
+        "verification": (final_rec or {}).get("verification", {"status": "unverified", "checks": [], "note": "旧记录未包含目标验收结果"}),
+        "telemetry": telemetry,
+        "duration_ms": (final_rec or {}).get("duration_ms", 0),
     }
     if with_steps:
         out["steps"] = steps
     return out
+
+
+@router.get("/agent/demos")
+def api_agent_demos() -> dict:
+    """Read-only recorded runs shipped with the project, never execute a replay."""
+    path = Path(__file__).resolve().parents[3] / "eval" / "agent_demos.json"
+    if not path.is_file():
+        return {"demos": []}
+    try:
+        return {"demos": json.loads(path.read_text(encoding="utf-8"))["demos"]}
+    except (OSError, ValueError, KeyError):
+        raise HTTPException(503, "演示记录暂不可读，请重新生成记录")
 
 
 @router.get("/agent/tasks")
@@ -1007,13 +1245,15 @@ async def api_agent_events(task_id: str):
         yield _sse({"type": "snapshot", **state.to_dict()})
         sent = len(state.steps)
         last_status = state.status
+        last_calls = state.telemetry.get('call_count', 0)
         while True:
             if len(state.steps) > sent:
                 for st in state.steps[sent:]:
                     yield _sse({"type": "step", "step": st})
                 sent = len(state.steps)
-            if state.status != last_status:
+            if state.status != last_status or state.telemetry.get('call_count', 0) != last_calls:
                 last_status = state.status
+                last_calls = state.telemetry.get('call_count', 0)
                 yield _sse({"type": "status", "state": state.to_dict(with_steps=False)})
             if state.status in ("done", "error"):
                 break

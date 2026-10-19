@@ -361,6 +361,7 @@ def test_chat_endpoint(monkeypatch, tmp_path):
     class _Reply:
         intent, reply, understanding = "status", "库里有 2 篇", "库状态（LLM）"
         notes, new_papers, sources = [], [], []
+        routing, telemetry, answer_status = {}, {}, ''
 
     monkeypatch.setattr(rt, "handle_message", lambda msg, **k: _Reply())
     r = client.post("/api/chat", json={"message": "看看状态"})
@@ -378,6 +379,7 @@ def test_chat_endpoint_persists_session(monkeypatch, tmp_path):
     class _Reply:
         intent, reply, understanding = "status", "库里有 2 篇", "库状态（LLM）"
         notes, new_papers, sources = [], [], []
+        routing, telemetry, answer_status = {}, {}, ''
 
     monkeypatch.setattr(rt, "handle_message", lambda msg, **k: _Reply())
     r = client.post("/api/chat", json={"message": "看看状态"})

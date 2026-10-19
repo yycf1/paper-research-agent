@@ -27,6 +27,7 @@ from paper_agent.parsing import extract_markdown, readable_chars
 from paper_agent.rag.embedder import embed
 from paper_agent.rag.splitter import split_markdown
 from paper_agent.rag.vectorstore import VectorStore
+from paper_agent.services.locks import paper_lock
 from paper_agent.services.versions import (
     EXPERIMENT_CONTRACT,
     REPORT_CONTRACT,
@@ -48,6 +49,11 @@ STAGE_LABELS = {
 
 
 def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | None = None) -> dict:
+    with paper_lock(lib, sid):
+        return _process_paper(sid, cfg, lib, progress=progress)
+
+
+def _process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | None = None) -> dict:
     """把一篇论文从当前状态推进到 indexed，返回阶段记录与最终状态。
 
     progress(stages) 在每次阶段状态变化时被调用（stages 为完整列表快照，
@@ -83,7 +89,7 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
     rec = lib.get(sid)
     st = _stage("download")
     if rec.status in ("discovered", "download_failed"):
-        if not rec.paper.pdf_urls:
+        if not rec.paper.pdf_urls and rec.paper.source not in {"openalex", "arxiv"} and not rec.paper.doi:
             _end(st, "failed", "无 OA 全文链接（仅摘要），无法处理")
             out["final_status"] = rec.status
             return out
@@ -94,9 +100,10 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
             lib.set_status(sid, "downloaded", error=None, pdf_path=str(path))
             _end(st, "ok", f"{path.stat().st_size / 1024:.0f} KB")
         except Exception as exc:
-            lib.set_status(sid, "download_failed", error=str(exc)[:500])
+            state = "discovered" if getattr(exc, "code", "") == "no_link" else "download_failed"
+            lib.set_status(sid, state, error=str(exc)[:500])
             _end(st, "failed", str(exc)[:200])
-            out["final_status"] = "download_failed"
+            out["final_status"] = state
             return out
     else:
         _end(st, "skipped", "已有原文，跳过")
@@ -119,8 +126,9 @@ def process_paper(sid: str, cfg: dict, lib: Library, *, progress: Callable | Non
             out["final_status"] = "downloaded"
             return out
         if readable_chars(md) < min_chars:
-            lib.set_status(sid, "downloaded", error="解析结果近乎为空（可能是扫描版 PDF）")
-            _end(st, "failed", "解析结果近乎为空")
+            reason = "可提取文字不足，可能是扫描件或空白文件；请打开原始文件核对，换用含文本的 PDF/DOCX 后补充全文。当前不支持 OCR。"
+            lib.set_status(sid, "downloaded", error=reason)
+            _end(st, "failed", reason)
             out["final_status"] = "downloaded"
             return out
         out_md = paths.parsed_dir(cfg) / safe_dirname(sid) / "full_text.md"

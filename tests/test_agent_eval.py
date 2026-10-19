@@ -82,7 +82,8 @@ def test_runner_multi_step_task(tmp_path, monkeypatch):
 
         case = {"id": "t1", "kind": "multi_step", "task": "找一篇 GNN 综述入库",
                 "must_call": ["search_papers", "add_papers"], "forbidden": ["ask_library"],
-                "expect_keywords": [["gnn survey"]]}
+                "expect_keywords": [["gnn survey"]],
+                "acceptance": [{"kind": "library_add", "min_added": 1}]}
         results = run_agent_evalset([case], executor_factory=factory, chat_fn=chat_fn)
         r = results[0]
         assert r.completed and r.tool_ok and r.answer_ok

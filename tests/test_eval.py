@@ -96,9 +96,9 @@ def test_aggregate_rank_metrics() -> None:
 # ---- 评测集本身（防手写 schema 漂移） ----
 
 
-def test_evalset_loads_and_has_enough_cases() -> None:
+def test_public_synthetic_evalset_covers_scopes() -> None:
     data = load_evalset(EVALSET)
-    assert len(data["cases"]) >= 20
+    assert len(data["cases"]) >= 3
     papers = {c.get("paper_id") for c in data["cases"]}
     assert len([p for p in papers if p]) >= 2  # 至少覆盖两篇论文
     assert any(c.get("paper_id") is None for c in data["cases"])  # 含跨库/范围外用例

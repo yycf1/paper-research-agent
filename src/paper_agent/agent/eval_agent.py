@@ -6,8 +6,9 @@
 - boundary：边界行为（域外拒绝不调工具、模糊指令澄清、空结果诚实汇报）。
 
 指标（面试叙事的核心数字）：
-- 任务完成率 completed：stopped_reason=final 且答案非空；
-- 工具合规 tool_ok：must_call 全出现 且 forbidden 零出现（越界操作率 = 1 - 合规）；
+- 任务完成率 completed：显式 acceptance 的状态/证据检查通过且工具约束合规；
+- 执行结束 execution_finished：模型已停止且答案非空，不证明目标成功；
+- 工具合规 tool_ok：must_call 均成功执行 且 forbidden 零出现；
 - 答案判定 answer_ok：关键词组（组间 AND、组内 OR，与 RAG 评测同一逻辑）；
 - 成本：平均步数、平均 tokens（从 AgentRunResult.usage 聚合）。
 
@@ -24,6 +25,7 @@ from typing import Callable
 from paper_agent.agent.loop import AgentRunResult, AgentStep, run_agent_task
 from paper_agent.agent.executor import ToolExecutor
 from paper_agent.rag.eval import judge_answer
+from paper_agent.agent.verification import library_snapshot, verify_outcome
 
 _TASK_KINDS = ("single_tool", "multi_step", "boundary")
 
@@ -44,6 +46,9 @@ class AgentTaskResult:
     tool_ok: bool | None = None
     answer_ok: bool | None = None
     violations: list[str] = field(default_factory=list)
+    execution_finished: bool = False
+    verification: dict = field(default_factory=dict)
+    telemetry: dict = field(default_factory=dict)
 
 
 def load_agent_tasks(path: Path) -> list[dict]:
@@ -88,6 +93,7 @@ def run_agent_evalset(
     cfg: dict | None = None,
     chat_fn: Callable[..., AgentRunResult] | None = None,
     on_result: Callable[[AgentTaskResult], None] | None = None,
+    trace_dir: Path | None = None,
 ) -> list[AgentTaskResult]:
     """顺序执行全部任务。每个任务用独立 executor（预览状态互不污染）。
 
@@ -96,15 +102,25 @@ def run_agent_evalset(
     results: list[AgentTaskResult] = []
     for case in cases:
         executor = executor_factory()
+        before = library_snapshot(executor)
         run = run_agent_task(
             case["task"],
             executor=executor,
             cfg=cfg,
             max_steps=case.get("max_steps"),
             chat_fn=chat_fn,
+            acceptance=case.get('acceptance'),
+            trace_path=Path(trace_dir) / f'{len(results):03d}.jsonl' if trace_dir else None,
         )
         used = [s.tool for s in run.steps]
         tool_ok, violations = judge_tool_usage(used, case.get("must_call"), case.get("forbidden"))
+        unsuccessful = [t for t in case.get("must_call", [])
+                        if t in used and not any(s.tool == t and s.status == "ok" for s in run.steps)]
+        if unsuccessful:
+            tool_ok = False
+            violations.append('期望工具未成功执行：' + ', '.join(unsuccessful))
+        verification = verify_outcome(run, before=before, after=library_snapshot(executor),
+                                      checks=case.get('acceptance'))
         answer_ok = None
         if case.get("expect_keywords"):
             answer_ok = judge_answer({"expect_keywords": case["expect_keywords"]}, run.answer)
@@ -117,10 +133,13 @@ def run_agent_evalset(
             steps=run.steps,
             tools_used=used,
             usage=run.usage,
-            completed=run.stopped_reason == "final" and bool(run.answer.strip()),
+            completed=verification['status'] == 'passed' and tool_ok is not False,
             tool_ok=tool_ok,
             answer_ok=answer_ok,
             violations=violations,
+            execution_finished=verification['execution_finished'],
+            verification=verification,
+            telemetry=run.telemetry,
         ))
         if on_result:
             on_result(results[-1])
@@ -136,6 +155,9 @@ def aggregate_results(results: list[AgentTaskResult]) -> dict:
     return {
         "total": len(results),
         "completion_rate": sum(r.completed for r in results) / n,
+        "execution_finished_rate": sum(r.execution_finished for r in results) / n,
+        "unverified_tasks": sum(r.verification.get('status') == 'unverified' for r in results),
+        "usage_complete_tasks": sum(r.telemetry.get('usage_complete') is True for r in results),
         "tool_ok_rate": (sum(r.tool_ok for r in judged_tool) / len(judged_tool)) if judged_tool else None,
         "answer_ok_rate": (sum(r.answer_ok for r in judged_answer) / len(judged_answer)) if judged_answer else None,
         "avg_steps": sum(len(r.steps) for r in results) / n,

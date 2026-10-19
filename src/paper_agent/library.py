@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS groups (
     name       TEXT PRIMARY KEY,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS pending_deletions (
+    source_id TEXT PRIMARY KEY,
+    error TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -100,6 +105,8 @@ class Library:
         返回是否为新论文。补充元数据是幂等的：arXiv/EuropePMC 后到的新链接、
         新摘要会并入已有条目，而已 downloaded/parsed 的状态不受影响。
         """
+        if self.conn.execute("SELECT 1 FROM pending_deletions WHERE source_id=?", (paper.source_id,)).fetchone():
+            raise ValueError("该论文仍有待清理的删除产物；请在任务记录中重试清理后再入库")
         existing = self.conn.execute(
             "SELECT source_id FROM papers WHERE source_id = ?", (paper.source_id,)
         ).fetchone()
@@ -191,6 +198,26 @@ class Library:
         cur = self.conn.execute("DELETE FROM papers WHERE source_id = ?", (source_id,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    def begin_delete(self, source_id: str) -> bool:
+        with self.conn:
+            if self.get(source_id) is None:
+                return False
+            self.conn.execute("INSERT OR REPLACE INTO pending_deletions VALUES (?, '', ?)",
+                              (source_id, datetime.now(UTC).isoformat()))
+            self.conn.execute("DELETE FROM papers WHERE source_id=?", (source_id,))
+        return True
+
+    def pending_deletions(self) -> list[dict]:
+        return [dict(row) for row in self.conn.execute("SELECT * FROM pending_deletions")]
+
+    def finish_delete(self, source_id: str, error: str = "") -> None:
+        with self.conn:
+            if error:
+                self.conn.execute("UPDATE pending_deletions SET error=?, updated_at=? WHERE source_id=?",
+                                  (error[:1000], datetime.now(UTC).isoformat(), source_id))
+            else:
+                self.conn.execute("DELETE FROM pending_deletions WHERE source_id=?", (source_id,))
 
     def tags(self) -> dict[str, int]:
         """分组标签 → 数量（不含空标签）。兼容保留；分组导航请用 groups()。"""

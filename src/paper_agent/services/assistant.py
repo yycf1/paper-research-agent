@@ -16,6 +16,8 @@ from paper_agent.library import Library
 from paper_agent.llm import chat
 from paper_agent.rag.qa import Retriever, answer_question, sources_from_hits
 from paper_agent.services.search import search_and_ingest
+from paper_agent.services.catalogue import catalogue_reply
+from paper_agent.observability import CallLedger, current_ledger, task_observation, call_stage
 
 HELP_TEXT = (
     "我支持：①检索新论文（「帮我找…主题…的论文」，可带年份/数量）"
@@ -41,6 +43,9 @@ class AssistantReply:
     notes: list[str] = field(default_factory=list)
     new_papers: list = field(default_factory=list)  # search 意图的新入库论文
     sources: list[dict] = field(default_factory=list)  # qa 意图的出处（Web 渲染可点击）
+    routing: dict = field(default_factory=dict)
+    telemetry: dict = field(default_factory=dict)
+    answer_status: str = ''
 
 
 def _hits_to_sources(hits: list) -> list[dict]:
@@ -48,7 +53,7 @@ def _hits_to_sources(hits: list) -> list[dict]:
     return sources_from_hits(hits)
 
 
-def handle_message(
+def _handle_message(
     text: str,
     *,
     lib: Library,
@@ -58,13 +63,16 @@ def handle_message(
     chat_fn=chat,
     history: list[tuple[str, str]] | None = None,
     allow_ingest: bool = True,
+    paper_ids: list[str] | None = None,
+    route: dict | None = None,
 ) -> AssistantReply:
     """处理一条用户消息：分类意图并执行，永不抛异常（错误转成 reply）。
 
     history 为本会话近几轮 (问题, 回答)，供问答链做指代消解（「它用了什么数据集」）。
     """
-    cfg = cfg or load_config()
-    route = classify_intent(text, chat_fn=chat_fn)
+    cfg = cfg if cfg is not None else load_config()
+    with call_stage('intent.classify'):
+        route = route or classify_intent(text, chat_fn=chat_fn, history=history)
     understanding = summarize_query_understanding(route)
     intent = route["intent"]
 
@@ -72,8 +80,10 @@ def handle_message(
         return AssistantReply("exit", "再见，祝科研顺利～", understanding=understanding)
     if intent == "help":
         text = HELP_TEXT if allow_ingest else (
-            "连续对话用于文献问答、解释和研究方向讨论，不会自动添加论文。"
-            "找新论文请打开「发现论文」预览后保存；需要多步操作可切换「执行任务」。"
+            "我是你的个人文献研究助手，可以分析库中研究方向、按方向统计题录、概括已索引论文的方法，并根据原文证据回答问题。"
+            f"当前文本模型是 {cfg.get('llm', {}).get('model') or '尚未配置'}。"
+            "同一研究对话会保留最近语境；可以选择论文范围并比较。需要找新论文时可打开「发现论文」，"
+            "需要入库等操作时，在输入框选择「执行操作」并提交。"
         )
         return AssistantReply("help", text, understanding=understanding)
     if intent == "off_topic":
@@ -83,17 +93,22 @@ def handle_message(
             "clarify", route.get("clarify_question") or CLARIFY_FALLBACK, understanding=understanding
         )
     if intent == "explore":
-        return AssistantReply("explore", suggest_directions(lib, chat_fn=chat_fn), understanding=understanding)
+        return AssistantReply("explore", suggest_directions(lib, chat_fn=chat_fn, paper_ids=paper_ids), understanding=understanding)
     if intent == "status":
-        counts = lib.counts()
+        counts = lib.counts() if paper_ids is None else dict(Counter(r.status for r in lib.list() if r.paper.source_id in set(paper_ids)))
         total = sum(counts.values())
         stat_line = "  ".join(f"{s}: {n}" for s, n in sorted(counts.items()))
-        return AssistantReply("status", f"文献库共 {total} 篇：{stat_line}", understanding=understanding)
+        return AssistantReply("status", f"{'文献库' if paper_ids is None else '所选范围内'}共 {total} 篇：{stat_line}", understanding=understanding)
+    if intent == 'catalogue':
+        result = catalogue_reply(route.get('catalogue') or {}, lib=lib, retriever=retriever,
+                                 chat_fn=chat_fn, paper_ids=paper_ids)
+        return AssistantReply('catalogue', result['reply'], understanding=understanding,
+                              sources=result['sources'], notes=result['notes'], answer_status=result['answer_status'])
     if intent == "search":
         if not allow_ingest:
             return AssistantReply(
-                "search", "这条需求涉及查找新论文。连续对话不会自动检索入库；"
-                "请到「发现论文」预览并选择，或把这条需求转为执行任务。",
+                "search", "这条需求涉及查找新论文。请到「发现论文」预览并选择，"
+                "或在下方选择「执行操作」后提交，由助手规划并执行。",
                 understanding=understanding,
             )
         return _do_search(text, route, lib=lib, cfg=cfg, params=params, understanding=understanding)
@@ -103,10 +118,32 @@ def handle_message(
     if retriever.store.count() == 0:
         return AssistantReply("qa", "向量库为空：先运行 `pa index --all` 建立索引。", understanding=understanding)
     try:
-        answer, hits = answer_question(question, retriever=retriever, history=history)
+        trace = {}
+        answer, hits = answer_question(question, retriever=retriever, history=history, chat_fn=chat_fn,
+                                       trace=trace, **({'paper_ids': paper_ids} if paper_ids is not None else {}))
     except RuntimeError as exc:  # 缺 Key 等配置问题
         return AssistantReply("qa", f"问答失败：{exc}", understanding=understanding)
-    return AssistantReply("qa", answer, understanding=understanding, sources=_hits_to_sources(hits))
+    return AssistantReply("qa", answer, understanding=understanding, sources=_hits_to_sources(hits), answer_status=trace.get('answer_status', ''))
+
+
+def handle_message(text: str, *, lib, retriever, params, cfg=None, chat_fn=chat,
+                   history=None, allow_ingest=True, paper_ids=None, route=None) -> AssistantReply:
+    cfg = cfg if cfg is not None else load_config()
+    original_chat = chat_fn
+    if chat_fn is chat:
+        chat_fn = lambda messages, **kw: original_chat(messages, cfg=cfg, **kw)
+    ledger = current_ledger() or CallLedger()
+    with task_observation(ledger, cfg):
+        with call_stage('intent.classify'):
+            resolved = route or classify_intent(text, chat_fn=chat_fn, history=history)
+        reply = _handle_message(text, lib=lib, retriever=retriever, params=params, cfg=cfg,
+                                chat_fn=chat_fn, history=history, allow_ingest=allow_ingest,
+                                paper_ids=paper_ids, route=resolved)
+        reply.routing = {k: resolved[k] for k in ('intent', 'via', 'catalogue', 'fallback_reason') if k in resolved}
+        if resolved.get('fallback_reason'):
+            reply.notes.insert(0, '意图分析暂不可用，本次按保守规则处理。')
+        reply.telemetry = ledger.summary()
+        return reply
 
 
 def _do_search(
@@ -160,12 +197,13 @@ def _do_search(
     return AssistantReply("search", reply, understanding=understanding, notes=notes, new_papers=new_papers)
 
 
-def suggest_directions(lib: Library, *, chat_fn=chat) -> str:
+def suggest_directions(lib: Library, *, chat_fn=chat, paper_ids: list[str] | None = None) -> str:
     """explore 引导：基于库内论文主题分布，让 LLM 归纳 2~3 个可探索方向。"""
-    titles = [r.paper.title for r in lib.list() if r.paper.title]
+    allowed = set(paper_ids) if paper_ids is not None else None
+    titles = [r.paper.title for r in lib.list() if r.paper.title and (allowed is None or r.paper.source_id in allowed)]
     if len(titles) < 3:
         return (
-            "文献库还比较空（少于 3 篇），先告诉我你的研究领域或课题关键词，"
+            f"{'当前所选范围' if paper_ids is not None else '文献库'}少于 3 篇，暂不足以归纳方向。先告诉我你的研究领域或课题关键词，"
             "我帮你检索一批论文进来（「帮我找 XX 的论文」），再基于它们给你梳理方向。"
         )
     sample = "\n".join(f"- {t}" for t in titles[:60])

@@ -127,6 +127,10 @@ def test_no_pdf_fails_download(monkeypatch, tmp_path):
     """无 OA 链接：download 阶段 failed，后续阶段不执行。"""
     lib = Library(tmp_path / "data" / "library.db")
     lib.upsert_paper(Paper(source="openalex", source_id="openalex:W9", title="No PDF"))
+    from paper_agent.download import DownloadError
+    def no_candidates(*args, **kwargs):
+        raise DownloadError("没有全文候选，当前仅摘要，可上传全文", code="no_link")
+    monkeypatch.setattr(proc, "download_pdf", no_candidates)
     try:
         out = proc.process_paper("openalex:W9", {"data_dir": str(tmp_path / "data")}, lib)
         assert out["final_status"] == "discovered"

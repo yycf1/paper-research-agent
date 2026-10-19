@@ -38,4 +38,5 @@ def http_get(
             last_exc = exc
             if attempt < retries:
                 time.sleep(2)
-    raise SourceUnavailable(f"请求失败（含 {retries} 次重试）：{last_exc}") from last_exc
+    # requests exceptions can contain query credentials; retain the error type only.
+    raise SourceUnavailable(f"网络请求失败（含 {retries} 次重试）：{type(last_exc).__name__}") from last_exc

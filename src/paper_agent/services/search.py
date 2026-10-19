@@ -8,7 +8,7 @@ M10 起拆成两层，Web 端支持「先预览再挑选入库」：
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from paper_agent.graph.route import optimize_query
 from paper_agent.library import Library, PaperRecord
@@ -51,6 +51,7 @@ class SearchOutcome:
 class IngestResult:
     new_papers: list[PaperRecord] = field(default_factory=list)
     duplicates: int = 0
+    selected_ids: list[str] = field(default_factory=list)
 
 
 def search_sources(
@@ -111,7 +112,7 @@ def search_sources(
     if min_citations:
         active_filters.append(f"最低被引 {min_citations}")
     if oa_only:
-        active_filters.append("仅可下载全文")
+        active_filters.append("来源提供全文候选链接（尚未验证可下载）")
     if year_to:
         active_filters.append(f"年份 ≤ {year_to}")
     if active_filters:
@@ -153,7 +154,15 @@ def search_sources(
                 result.degraded_sources[name] = tool_result.error
                 continue
             if tool_result.status != "ok":
-                hint = "可在 config.yaml 配置 proxy" if name == "arxiv" else "请检查网络"
+                error = tool_result.error.lower()
+                if name == "openalex" and any(s in error for s in ("429", "401", "403", "预算", "认证")):
+                    hint = "检查 .env 中的 OPENALEX_API_KEY 及账号用量；预算耗尽需等待重置或调整额度"
+                elif "429" in error:
+                    hint = "来源限流，请稍后重试"
+                elif any(s in error for s in ("401", "403")):
+                    hint = "来源拒绝访问，请核对授权或使用其他来源"
+                else:
+                    hint = "可在 config.yaml 配置 proxy" if name == "arxiv" else "请检查网络或代理"
                 result.notes.append(f"{name} 不可用（{tool_result.error}），已跳过——{hint}")
                 result.degraded_sources[name] = tool_result.error
                 continue
@@ -197,7 +206,12 @@ def ingest_papers(
     """把选中的候选入库；再次对照账本去重（预览与入库之间库可能已变化）。"""
     out = IngestResult()
     for p in papers:
+        duplicate_id = lib.find_duplicate(p)
+        if duplicate_id and duplicate_id != p.source_id:
+            p = replace(p, source_id=duplicate_id)
         is_new = lib.upsert_paper(p, tag=tag)
+        if p.source_id not in out.selected_ids:
+            out.selected_ids.append(p.source_id)
         if is_new:
             rec = lib.get(p.source_id)
             if rec:

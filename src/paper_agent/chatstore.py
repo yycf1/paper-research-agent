@@ -47,11 +47,16 @@ class ChatStore:
         self._migrate()
 
     def _migrate(self) -> None:
-        """老库原地升级：缺 sources 列时补齐（M11 问答出处持久化）。"""
+        """兼容旧会话，补齐出处、范围和结构化结果，不改动文献记录。"""
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(chat_messages)")}
         if "sources" not in cols:
             self.conn.execute("ALTER TABLE chat_messages ADD COLUMN sources TEXT")
-            self.conn.commit()
+        if "details" not in cols:
+            self.conn.execute("ALTER TABLE chat_messages ADD COLUMN details TEXT")
+        session_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(chat_sessions)")}
+        if "paper_ids" not in session_cols:
+            self.conn.execute("ALTER TABLE chat_sessions ADD COLUMN paper_ids TEXT")
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -95,6 +100,15 @@ class ChatStore:
         self.conn.commit()
         return cur.rowcount > 0
 
+    def get_scope(self, sid: str) -> list[str] | None:
+        row = self.conn.execute("SELECT paper_ids FROM chat_sessions WHERE id = ?", (sid,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
+
+    def set_scope(self, sid: str, paper_ids: list[str] | None) -> None:
+        self.conn.execute("UPDATE chat_sessions SET paper_ids = ? WHERE id = ?",
+                          (json.dumps(paper_ids), sid))
+        self.conn.commit()
+
     # ---- 消息 ----
 
     def append_message(
@@ -107,15 +121,17 @@ class ChatStore:
         understanding: str = "",
         notes: list[str] | None = None,
         sources: list[dict] | None = None,
+        details: dict | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat(timespec="seconds")
         self.conn.execute(
-            "INSERT INTO chat_messages (session_id, role, content, intent, understanding, notes, sources, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO chat_messages (session_id, role, content, intent, understanding, notes, sources, details, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 sid, role, content, intent, understanding,
                 json.dumps(notes or [], ensure_ascii=False),
                 json.dumps(sources or [], ensure_ascii=False),
+                json.dumps(details or {}, ensure_ascii=False),
                 now,
             ),
         )
@@ -126,7 +142,7 @@ class ChatStore:
 
     def get_messages(self, sid: str) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT id, role, content, intent, understanding, notes, sources, created_at"
+            "SELECT id, role, content, intent, understanding, notes, sources, details, created_at"
             " FROM chat_messages WHERE session_id = ? ORDER BY id",
             (sid,),
         ).fetchall()
@@ -135,5 +151,6 @@ class ChatStore:
             d = dict(r)
             d["notes"] = json.loads(d["notes"] or "[]")
             d["sources"] = json.loads(d["sources"] or "[]")
+            d["details"] = json.loads(d["details"] or "{}")
             out.append(d)
         return out

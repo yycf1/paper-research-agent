@@ -1,4 +1,4 @@
-"""OpenAlex client：主力学术索引（免 Key，mailto 礼貌池）。
+"""OpenAlex client：支持 OPENALEX_API_KEY，匿名预算与账号额度分别诊断。
 
 API 文档：https://docs.openalex.org
 - search 支持自然语言关键词；摘要以倒排索引返回，需重建；
@@ -8,8 +8,9 @@ API 文档：https://docs.openalex.org
 from __future__ import annotations
 
 import re
+import os
 import time
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from paper_agent.models import Paper
 from paper_agent.sources import SourceUnavailable
@@ -21,6 +22,34 @@ _SELECT = (
     "id,doi,display_name,authorships,publication_year,cited_by_count,"
     "abstract_inverted_index,open_access,best_oa_location,primary_location,locations"
 )
+
+
+def _authenticate(params: dict) -> dict:
+    key = os.environ.get("OPENALEX_API_KEY", "").strip()
+    return {**params, **({"api_key": key} if key else {})}
+
+
+def _check_response(response) -> None:
+    if response.status_code == 200:
+        return
+    status = response.status_code
+    key = os.environ.get("OPENALEX_API_KEY", "")
+    text = response.text[:500]
+    if key:
+        text = text.replace(key, "[redacted]")
+    remaining = response.headers.get("X-RateLimit-Remaining", "")
+    if status == 429:
+        exhausted = remaining == "0" or any(word in text.lower() for word in ("budget", "daily", "quota", "credit"))
+        hint = "每日预算已耗尽，等待重置或调整账号额度" if exhausted else "临时请求限流，请稍后重试"
+        if not key:
+            hint += "；当前未配置 OPENALEX_API_KEY，可在 .env 配置自己的 Key"
+    elif status in {401, 403}:
+        hint = "认证或权限异常，请检查 .env 中的 OPENALEX_API_KEY"
+    else:
+        hint = "来源服务异常，可稍后重试"
+    if status == 400:
+        hint = f"检索条件或接口参数不被接受，请调整条件。{text[:120]}"
+    raise SourceUnavailable(f"OpenAlex HTTP {status}：{hint}")
 
 
 def rebuild_abstract(inverted: dict[str, list[int]]) -> str:
@@ -67,15 +96,18 @@ def parse_response(data: dict) -> list[Paper]:
     return [p for p in (parse_work(w) for w in data.get("results", [])) if p.title]
 
 
-def refresh_pdf_urls(source_id: str, *, proxy: str = "") -> list[str]:
-    """旧 OpenAlex 记录下载失败后，按已有 Work ID 查询开放副本；最多一次元数据请求。"""
+def refresh_pdf_urls(source_id: str, *, proxy: str = "", doi: str | None = None) -> list[str]:
+    """按 Work ID 或已知 DOI 查询同篇开放副本；最多一次元数据请求。"""
     match = re.fullmatch(r"openalex:(W\d+)", source_id)
-    if not match:
+    if match:
+        identifier = match[1]
+    elif doi and re.fullmatch(r"10\.\d{4,9}/\S+", doi):
+        identifier = "https://doi.org/" + quote(doi, safe="/")
+    else:
         return []
-    response = http_get(f"{_API}/{match[1]}", params={"select": "id,display_name,open_access,best_oa_location,primary_location,locations"},
+    response = http_get(f"{_API}/{identifier}", params=_authenticate({"select": "id,display_name,open_access,best_oa_location,primary_location,locations"}),
                         proxy=proxy, timeout=(6, 15), retries=0)
-    if response.status_code != 200:
-        raise SourceUnavailable(f"OpenAlex 开放副本查询 HTTP {response.status_code}")
+    _check_response(response)
     return parse_work(response.json()).pdf_urls
 
 
@@ -144,9 +176,8 @@ def search(
         field=field, author=author, sort=sort, year_to=year_to, email=email,
     )
     started = time.perf_counter()
-    resp = http_get(_API, params=params, proxy=proxy, timeout=(10, 60))
-    if resp.status_code != 200:
-        raise SourceUnavailable(f"OpenAlex HTTP {resp.status_code}: {resp.text[:120]}")
+    resp = http_get(_API, params=_authenticate(params), proxy=proxy, timeout=(10, 60))
+    _check_response(resp)
     data = resp.json()
     papers = parse_response(data)
     _ = started  # 计时仅用于调试，probe 里另有计时
@@ -159,8 +190,7 @@ def probe(proxy: str = "", email: str = "") -> str:
     if email:
         params["mailto"] = email
     started = time.perf_counter()
-    resp = http_get(_API, params=params, proxy=proxy, timeout=(8, 20))
+    resp = http_get(_API, params=_authenticate(params), proxy=proxy, timeout=(8, 20))
     cost = time.perf_counter() - started
-    if resp.status_code != 200:
-        raise SourceUnavailable(f"HTTP {resp.status_code}")
+    _check_response(resp)
     return f"HTTP 200，检索通道正常（{cost:.1f}s）"

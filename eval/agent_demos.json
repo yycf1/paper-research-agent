@@ -1,0 +1,506 @@
+{
+  "schema_version": 1,
+  "fixture": "original synthetic evidence, not a research benchmark",
+  "setup_telemetry": {
+    "call_count": 1,
+    "known_usage_calls": 1,
+    "unknown_usage_calls": 0,
+    "usage_complete": true,
+    "prompt": 0,
+    "completion": 0,
+    "embedding_tokens": 253,
+    "rerank_tokens": 0,
+    "elapsed_ms": 3694.03,
+    "failed_calls": 0,
+    "cost": null,
+    "cost_note": "未配置价格，未估算费用",
+    "calls": [
+      {
+        "id": 1,
+        "kind": "embedding",
+        "stage": "demo.index_fixture",
+        "model": "BAAI/bge-m3",
+        "status": "ok",
+        "usage": {
+          "prompt": 253,
+          "completion": 0,
+          "total": 253
+        },
+        "usage_known": true,
+        "units": {
+          "texts": 4
+        },
+        "elapsed_ms": 3694.03
+      }
+    ]
+  },
+  "demos": [
+    {
+      "id": "success-20261016T015220Z-150755",
+      "task": "先查看所选论文的数量与状态，再查询 Demo-M 的 Recall@5 数值、数据划分和评估协议，用库内原文证据回答。仅查看和问答，不新增题录，不运行代码。",
+      "status": "done",
+      "steps": [
+        {
+          "step": 1,
+          "tool": "library_status",
+          "arguments": {},
+          "status": "ok",
+          "detail": "库内共 1 篇",
+          "duration_ms": 0,
+          "comparison": null,
+          "observation": {
+            "total": 1,
+            "scope": "selected_papers",
+            "paper_ids": [
+              "local:demo-evidence"
+            ]
+          }
+        },
+        {
+          "step": 2,
+          "tool": "ask_library",
+          "arguments": {
+            "question": "Recall@5 数值是多少？数据划分和评估协议是什么？",
+            "paper_id": "local:demo-evidence"
+          },
+          "status": "ok",
+          "detail": "Recall@5 数值是 0.72（以比率表示）[1]。  \n数据划分是使用 Synthetic-A 数据集的固定保留测",
+          "duration_ms": 21656,
+          "comparison": null,
+          "observation": {
+            "answer_status": "generated",
+            "answer": "Recall@5 数值是 0.72（以比率表示）[1]。  \n数据划分是使用 Synthetic-A 数据集的固定保留测试集（held-out test split）[3]。  \n评估协议是对整个候选文档库进行排序，不使用负采样[1]。",
+            "sources": [
+              {
+                "n": [
+                  1
+                ],
+                "paper_id": "local:demo-evidence",
+                "title": "Demo-M: Original Synthetic Retrieval Evidence",
+                "section": "2 Results",
+                "page": 1,
+                "chunks": [
+                  {
+                    "n": 1,
+                    "chunk_id": "local:demo-evidence::2",
+                    "page": 1,
+                    "text": "《Demo-M: Original Synthetic Retrieval Evidence》 2 Results\n\nDemo-M Recall@5 is 0.72, expressed as a ratio, on Synthetic-A held-out test queries.\nRecall@5 is the fraction of relevant documents included among the five retrieved results.\nEvaluation ranks the full candidate corpus without negative sampling.\nThere are 100 held-out test queries; this illustrative value is not a real benchmark result."
+                  }
+                ]
+              },
+              {
+                "n": [
+                  2
+                ],
+                "paper_id": "local:demo-evidence",
+                "title": "Demo-M: Original Synthetic Retrieval Evidence",
+                "section": "3 Limitations",
+                "page": 1,
+                "chunks": [
+                  {
+                    "n": 2,
+                    "chunk_id": "local:demo-evidence::3",
+                    "page": 1,
+                    "text": "《Demo-M: Original Synthetic Retrieval Evidence》 3 Limitations\n\nThe material does not report confidence intervals or external validation."
+                  }
+                ]
+              },
+              {
+                "n": [
+                  3
+                ],
+                "paper_id": "local:demo-evidence",
+                "title": "Demo-M: Original Synthetic Retrieval Evidence",
+                "section": "1 Methods",
+                "page": 1,
+                "chunks": [
+                  {
+                    "n": 3,
+                    "chunk_id": "local:demo-evidence::1",
+                    "page": 1,
+                    "text": "《Demo-M: Original Synthetic Retrieval Evidence》 1 Methods\n\nDemo-M uses a two-stage retriever: BM25 and dense retrieval are fused before reranking.\nThe task is retrieval on Synthetic-A with a fixed held-out test split."
+                  }
+                ]
+              },
+              {
+                "n": [
+                  4
+                ],
+                "paper_id": "local:demo-evidence",
+                "title": "Demo-M: Original Synthetic Retrieval Evidence",
+                "section": "开篇",
+                "page": 1,
+                "chunks": [
+                  {
+                    "n": 4,
+                    "chunk_id": "local:demo-evidence::0",
+                    "page": 1,
+                    "text": "《Demo-M: Original Synthetic Retrieval Evidence》 开篇\n\nOriginal isolated demonstration. This is synthetic research material, not a published paper."
+                  }
+                ]
+              }
+            ],
+            "citation_check": {
+              "status": "passed",
+              "numbers": [
+                1,
+                3,
+                1
+              ],
+              "invalid_numbers": [],
+              "missing_citation": false,
+              "malformed_range": false,
+              "refusal_prefix": false,
+              "semantic_support": "not_automatically_judged"
+            }
+          }
+        }
+      ],
+      "step_count": 2,
+      "answer": "本次统计与结论范围：所选 1 篇论文（local:demo-evidence）。\n\n根据查询结果，我为您整理关于 Demo-M 论文的信息：\n\n## 库状态\n- **所选范围内论文数**：1篇\n- **论文ID**：`local:demo-evidence`\n- **论文标题**：Demo-M: Original Synthetic Retrieval Evidence\n\n## Demo-M 论文信息（基于库内原文证据）\n\n### 1. Recall@5 数值\n- **数值**：0.72（以比率表示）[1]\n- **定义**：Recall@5 是在前5个检索结果中包含相关文档的比例[1]\n- **说明**：该值是在 Synthetic-A 数据集的保留测试查询上计算的，是一个说明性数值，并非真实的基准测试结果[1]\n\n### 2. 数据划分\n- **数据集**：Synthetic-A[3]\n- **划分方式**：使用固定的保留测试集（held-out test split）[3]\n- **测试查询数量**：100个保留测试查询[1]\n\n### 3. 评估协议\n- **评估方法**：对整个候选文档库进行排序，不使用负采样[1]\n- **模型架构**：Demo-M 使用两阶段检索器：BM25 和密集检索在重排序前进行融合[3]\n\n### 4. 论文性质说明\n该材料是原始隔离演示，属于合成研究材料，并非已发表的论文[4]。材料未报告置信区间或外部验证[2]。\n\n**建议的下一步**：如果您想深入了解该论文的方法细节或与其他检索方法进行对比，我可以进一步分析论文内容或进行对比分析。",
+      "stopped_reason": "final",
+      "usage": {
+        "prompt": 6720,
+        "completion": 557
+      },
+      "telemetry": {
+        "call_count": 6,
+        "known_usage_calls": 5,
+        "unknown_usage_calls": 1,
+        "usage_complete": false,
+        "prompt": 6720,
+        "completion": 557,
+        "embedding_tokens": 20,
+        "rerank_tokens": 0,
+        "elapsed_ms": 66900.73,
+        "failed_calls": 0,
+        "cost": null,
+        "cost_note": "未配置价格，未估算费用",
+        "calls": [
+          {
+            "id": 1,
+            "kind": "chat",
+            "stage": "agent.decision",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 1744,
+              "completion": 50,
+              "total": 1794
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 7243.63
+          },
+          {
+            "id": 2,
+            "kind": "chat",
+            "stage": "agent.decision",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 1870,
+              "completion": 118,
+              "total": 1988
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 7502.75
+          },
+          {
+            "id": 3,
+            "kind": "embedding",
+            "stage": "retrieval.embedding",
+            "model": "BAAI/bge-m3",
+            "status": "ok",
+            "usage": {
+              "prompt": 20,
+              "completion": 0,
+              "total": 20
+            },
+            "usage_known": true,
+            "units": {
+              "texts": 1
+            },
+            "elapsed_ms": 196.76
+          },
+          {
+            "id": 4,
+            "kind": "rerank",
+            "stage": "retrieval.rerank",
+            "model": "BAAI/bge-reranker-v2-m3",
+            "status": "ok",
+            "usage": {},
+            "usage_known": false,
+            "units": {
+              "documents": 4
+            },
+            "elapsed_ms": 3175.77
+          },
+          {
+            "id": 5,
+            "kind": "chat",
+            "stage": "qa.answer",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 421,
+              "completion": 58,
+              "total": 479
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 18234.6
+          },
+          {
+            "id": 6,
+            "kind": "chat",
+            "stage": "agent.decision",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 2685,
+              "completion": 331,
+              "total": 3016
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 30547.22
+          }
+        ]
+      },
+      "verification": {
+        "status": "passed",
+        "execution_finished": true,
+        "checks": [
+          {
+            "kind": "tool_success",
+            "passed": true,
+            "detail": "指定工具均返回正常结果"
+          },
+          {
+            "kind": "evidence_answer",
+            "passed": true,
+            "detail": "核对检索来源与引用结构；结论语义仍需阅读原文核对"
+          },
+          {
+            "kind": "no_library_mutation",
+            "passed": true,
+            "detail": "比较执行前后题录、状态与全文路径"
+          }
+        ],
+        "added_ids": [],
+        "failed_steps": 0,
+        "note": "按所选条件核验执行结果；来源与引用结构检查不证明全部回答的语义正确。",
+        "before_sha256": "ac543a005ff6acbb3bff3e37a5592e3cf07398a58ab9441493e742c27fe86ecb",
+        "after_sha256": "ac543a005ff6acbb3bff3e37a5592e3cf07398a58ab9441493e742c27fe86ecb"
+      },
+      "duration_ms": 66971,
+      "error": "",
+      "pending_confirm": null,
+      "allowed_paper_ids": [
+        "local:demo-evidence"
+      ],
+      "provenance": "真实模型决策与问答、真实向量/重排序服务；原创隔离 PDF；失败案例为未索引资料。",
+      "recorded_at": "2026-10-16T01:53:38.149836+00:00",
+      "expected_outcome": "passed",
+      "acceptance": [
+        {
+          "kind": "tool_success",
+          "tools": [
+            "library_status",
+            "ask_library"
+          ]
+        },
+        {
+          "kind": "evidence_answer"
+        },
+        {
+          "kind": "no_library_mutation"
+        }
+      ],
+      "trace_sha256": "fcb481a4c351f427f7774ff80acce71e99f1dcb44f8fe0e06a6a79207bd07d2b",
+      "fixture_sha256": "fe5d6560aae1cbb72e6e94f8d14a8a1a0c28e2add30958fd3afcb48291c3b820",
+      "trace_file": "demo-traces/20261016T015220Z-150755-success.jsonl"
+    },
+    {
+      "id": "failure-20261016T015220Z-150755",
+      "task": "先查看所选论文的数量与状态，再尝试用库内问答检索这篇论文的 Recall@5 数值与评估协议，给出原文出处。如果没有索引或证据，请明确说明失败原因，不能猜测。仅查看和问答。",
+      "status": "done",
+      "steps": [
+        {
+          "step": 1,
+          "tool": "library_status",
+          "arguments": {},
+          "status": "ok",
+          "detail": "库内共 1 篇",
+          "duration_ms": 0,
+          "comparison": null,
+          "observation": {
+            "total": 1,
+            "scope": "selected_papers",
+            "paper_ids": [
+              "local:demo-unindexed"
+            ]
+          }
+        },
+        {
+          "step": 2,
+          "tool": "ask_library",
+          "arguments": {
+            "question": "Recall@5数值与评估协议",
+            "paper_id": "local:demo-unindexed"
+          },
+          "status": "ok",
+          "detail": "所选论文尚无可检索的索引块，请先处理或索引这些论文。",
+          "duration_ms": 258,
+          "comparison": null,
+          "observation": {
+            "answer_status": "scope_unindexed",
+            "answer": "所选论文尚无可检索的索引块，请先处理或索引这些论文。",
+            "sources": [],
+            "citation_check": null
+          }
+        }
+      ],
+      "step_count": 2,
+      "answer": "本次统计与结论范围：所选 1 篇论文（local:demo-unindexed）。\n\n## 结果总结\n\n**1. 论文库状态：**\n- 所选范围内论文数：1篇\n- 论文ID：`local:demo-unindexed`\n- 状态：已发现（discovered），但尚未索引\n\n**2. Recall@5数值与评估协议检索结果：**\n- **检索失败**，原因：`scope_unindexed`（范围未索引）\n- 论文\"local:demo-unindexed\"目前还没有建立可检索的索引块，无法进行内容问答\n\n## 失败原因说明\n\n根据工具返回的`answer_status: \"scope_unindexed\"`，这篇论文虽然已入库，但**尚未进行索引处理**。这意味着：\n\n1. **论文内容未被解析和索引**，无法通过自然语言查询检索具体信息\n2. **无法获取Recall@5数值**，因为系统无法访问论文的文本内容\n3. **无法获取评估协议细节**，同样因为内容未被索引\n\n## 建议的下一步\n\n1. **需要先对论文进行索引处理**：您需要联系系统管理员或使用相应的索引工具，将这篇论文的内容解析并建立索引\n2. **索引完成后才能进行内容问答**：只有论文被索引后，才能查询Recall@5、评估协议等具体技术细节\n3. **考虑其他获取方式**：如果急需这些信息，可以尝试直接查看论文原文PDF文件\n\n**注意**：在当前状态下，我无法猜测或推测论文中的任何内容，包括Recall@5数值和评估协议，只能如实报告索引状态。",
+      "stopped_reason": "final",
+      "usage": {
+        "prompt": 5675,
+        "completion": 476
+      },
+      "telemetry": {
+        "call_count": 4,
+        "known_usage_calls": 4,
+        "unknown_usage_calls": 0,
+        "usage_complete": true,
+        "prompt": 5675,
+        "completion": 476,
+        "embedding_tokens": 11,
+        "rerank_tokens": 0,
+        "elapsed_ms": 57733.56,
+        "failed_calls": 0,
+        "cost": null,
+        "cost_note": "未配置价格，未估算费用",
+        "calls": [
+          {
+            "id": 1,
+            "kind": "chat",
+            "stage": "agent.decision",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 1748,
+              "completion": 45,
+              "total": 1793
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 3376.28
+          },
+          {
+            "id": 2,
+            "kind": "chat",
+            "stage": "agent.decision",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 1870,
+              "completion": 105,
+              "total": 1975
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 17121.47
+          },
+          {
+            "id": 3,
+            "kind": "embedding",
+            "stage": "retrieval.embedding",
+            "model": "BAAI/bge-m3",
+            "status": "ok",
+            "usage": {
+              "prompt": 11,
+              "completion": 0,
+              "total": 11
+            },
+            "usage_known": true,
+            "units": {
+              "texts": 1
+            },
+            "elapsed_ms": 241.5
+          },
+          {
+            "id": 4,
+            "kind": "chat",
+            "stage": "agent.decision",
+            "model": "deepseek-ai/DeepSeek-V3.2",
+            "status": "ok",
+            "usage": {
+              "prompt": 2057,
+              "completion": 326,
+              "total": 2383
+            },
+            "usage_known": true,
+            "units": {},
+            "elapsed_ms": 36994.31
+          }
+        ]
+      },
+      "verification": {
+        "status": "failed",
+        "execution_finished": true,
+        "checks": [
+          {
+            "kind": "tool_success",
+            "passed": true,
+            "detail": "指定工具均返回正常结果"
+          },
+          {
+            "kind": "evidence_answer",
+            "passed": false,
+            "detail": "核对检索来源与引用结构；结论语义仍需阅读原文核对"
+          },
+          {
+            "kind": "no_library_mutation",
+            "passed": true,
+            "detail": "比较执行前后题录、状态与全文路径"
+          }
+        ],
+        "added_ids": [],
+        "failed_steps": 0,
+        "note": "按所选条件核验执行结果；来源与引用结构检查不证明全部回答的语义正确。",
+        "before_sha256": "ac543a005ff6acbb3bff3e37a5592e3cf07398a58ab9441493e742c27fe86ecb",
+        "after_sha256": "ac543a005ff6acbb3bff3e37a5592e3cf07398a58ab9441493e742c27fe86ecb"
+      },
+      "duration_ms": 57775,
+      "error": "",
+      "pending_confirm": null,
+      "allowed_paper_ids": [
+        "local:demo-unindexed"
+      ],
+      "provenance": "真实模型决策与问答、真实向量/重排序服务；原创隔离 PDF；失败案例为未索引资料。",
+      "recorded_at": "2026-10-16T01:54:35.950481+00:00",
+      "expected_outcome": "failed",
+      "acceptance": [
+        {
+          "kind": "tool_success",
+          "tools": [
+            "library_status",
+            "ask_library"
+          ]
+        },
+        {
+          "kind": "evidence_answer"
+        },
+        {
+          "kind": "no_library_mutation"
+        }
+      ],
+      "trace_sha256": "9668ec9d60c962096cb248d1a1a5325065c8c5276b9f0a6d2f0f3ae4703da15b",
+      "fixture_sha256": "fe5d6560aae1cbb72e6e94f8d14a8a1a0c28e2add30958fd3afcb48291c3b820",
+      "trace_file": "demo-traces/20261016T015220Z-150755-failure.jsonl"
+    }
+  ]
+}

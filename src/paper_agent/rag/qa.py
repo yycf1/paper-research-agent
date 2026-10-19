@@ -23,6 +23,8 @@ from paper_agent.rag.scope import check_hits, query_scope
 from paper_agent.rag.tracing import capture_stage, hit_record
 from paper_agent.rag.vectorstore import Hit, VectorStore
 from paper_agent.services.versions import digest, model_identity
+from paper_agent.observability import (CallLedger, current_ledger, task_observation,
+                                       observed_call, call_stage, normalize_usage)
 
 MAX_HISTORY_TURNS = 3
 
@@ -53,6 +55,19 @@ class Retriever:
                  trace: dict | None = None) -> list[Hit]:
         scope = query_scope(paper_id, paper_ids)
         self.notes = []
+        # Exclude tombstones before either retrieval branch or version validation.
+        ledger = paths.data_dir(self.cfg) / "library.db"
+        if ledger.is_file():
+            import sqlite3
+            with sqlite3.connect(ledger.resolve().as_uri() + "?mode=ro", uri=True) as conn:
+                tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                pending = {row[0] for row in conn.execute("SELECT source_id FROM pending_deletions")} if "pending_deletions" in tables else set()
+                if pending:
+                    requested = scope.get("paper_ids") or ([paper_id] if paper_id else None)
+                    ids = [sid for sid in (requested or [row[0] for row in conn.execute("SELECT source_id FROM papers")]) if sid not in pending]
+                    if not ids:
+                        return []
+                    scope = {"paper_ids": ids}
         started = time.perf_counter()
         options = self.cfg.get("retrieval", {})
         hybrid = options.get("hybrid", True) and callable(getattr(self.store, "all_hits", None))
@@ -87,7 +102,8 @@ class Retriever:
         if mode != "bm25":
             stage_started = time.perf_counter()
             try:
-                vector = self.embed_fn([query])[0]
+                with call_stage("retrieval.embedding"):
+                    vector = self.embed_fn([query])[0]
                 dense = self.store.query(vector, k=depth, **scope)
                 check_hits(dense, scope)
                 capture_stage(trace, "dense", dense, started=stage_started)
@@ -108,7 +124,8 @@ class Retriever:
         if mode == "hybrid" and rcfg.get("enabled", False) and hits:
             stage_started = time.perf_counter()
             try:
-                hits = self.rerank_fn(query, hits, rcfg, k=k)
+                with call_stage("retrieval.rerank"):
+                    hits = self.rerank_fn(query, hits, rcfg, k=k)
                 capture_stage(trace, "reranked", hits, started=stage_started)
             except Exception as exc:
                 capture_stage(trace, "reranked", [], status="error", started=stage_started)
@@ -179,7 +196,7 @@ def sources_from_hits(hits: list[Hit]) -> list[dict]:
     return [grouped[k] for k in order]
 
 
-def answer_question(
+def _answer_question(
     question: str,
     *,
     retriever: Retriever,
@@ -198,6 +215,9 @@ def answer_question(
     8 块 ≈ 5k token 上下文，实测关键事实多排在 6~8 位，5 块容易漏。
     """
     scope = query_scope(paper_id, paper_ids)
+    requested_trace = trace is not None
+    # Keep phases observable even when a caller does not request a detailed QA trace.
+    trace = trace if trace is not None else {}
     if trace is not None:
         trace.update(question=question, retrieval_query=question, rewrite="not_run", calls=[])
         original_chat = chat_fn
@@ -207,9 +227,12 @@ def answer_question(
             call = {"phase": trace.get("phase", "answer")}
             trace["calls"].append(call)
             try:
-                reply, usage = original_chat(messages, **kwargs)
-                call["usage"] = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
-                                 if isinstance(usage.get(key), int) and not isinstance(usage[key], bool)}
+                with call_stage("qa." + call["phase"]):
+                    reply, usage = observed_call(lambda: original_chat(messages, **kwargs),
+                                                 fallback=True, usage_of=lambda r: r[1])
+                normalized = normalize_usage(usage)
+                call["usage"] = {key + "_tokens" if key != "total" else "total_tokens": value
+                                 for key, value in normalized.items()}
                 call["status"] = "ok"
                 return reply, usage
             except Exception as exc:
@@ -245,7 +268,7 @@ def answer_question(
                 query = question
                 if trace is not None:
                     trace["rewrite"] = "error_fallback"
-        if trace is None:
+        if not requested_trace:
             hits = retriever.retrieve(query, k=k, **scope)
         else:
             trace["retrieval_query"] = query
@@ -279,6 +302,7 @@ def answer_question(
     if not answer.strip():
         # GLM 混合推理模型：思考 tokens 可能吃光 max_tokens 导致空回复，
         # 禁用思考按同参数重问一次（正常路径零额外开销）
+        trace["phase"] = "empty_retry"
         answer, _usage = chat_fn(messages, max_tokens=2048, temperature=0.2, thinking=False)
     elif "未提及" in answer and any((h.relevance_score or 0) >= 0.35 for h in hits):
         # 高相关证据仍被模型拒答时，仅复核一次；绝不将拒答直接改写成肯定答案。
@@ -287,6 +311,7 @@ def answer_question(
             "如果能够回答原问题，给出简短答案和准确引用；若确实没有证据，仍回答未提及。"
         )}]
         try:
+            trace["phase"] = "evidence_review"
             reviewed, _usage = chat_fn(review, max_tokens=2048, temperature=0.0, thinking=True)
             if reviewed.strip():
                 answer = reviewed
@@ -322,3 +347,21 @@ def answer_question(
     if retriever.notes:
         answer += "\n\n> " + " ".join(retriever.notes)
     return finish(answer, hits, "refused" if check["refusal_prefix"] else "generated")
+
+
+def answer_question(question: str, *, retriever: Retriever, history=None, k=8,
+                    paper_id=None, paper_ids=None, chat_fn=chat, hits=None, trace=None):
+    """Account standalone QA too; nested Agent QA shares the parent task ledger."""
+    if current_ledger() is not None:
+        return _answer_question(question, retriever=retriever, history=history, k=k,
+                                paper_id=paper_id, paper_ids=paper_ids, chat_fn=chat_fn,
+                                hits=hits, trace=trace)
+    ledger = CallLedger()
+    with task_observation(ledger, getattr(retriever, 'cfg', None)):
+        try:
+            return _answer_question(question, retriever=retriever, history=history, k=k,
+                                    paper_id=paper_id, paper_ids=paper_ids, chat_fn=chat_fn,
+                                    hits=hits, trace=trace)
+        finally:
+            if trace is not None:
+                trace['telemetry'] = ledger.summary()

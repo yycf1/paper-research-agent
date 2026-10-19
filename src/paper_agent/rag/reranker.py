@@ -7,21 +7,25 @@ import httpx
 
 from paper_agent.config import resolve_endpoint
 from paper_agent.rag.vectorstore import Hit
+from paper_agent.observability import observed_call
 
 
 def rerank(query: str, hits: list[Hit], config: dict, *, k: int) -> list[Hit]:
     ep = resolve_endpoint(config)
     if not ep.api_key:
         raise RuntimeError("未配置 Reranker API Key")
-    response = httpx.post(
-        ep.base_url.rstrip("/") + "/rerank",
-        headers={"Authorization": f"Bearer {ep.api_key}"},
-        json={"model": ep.model, "query": query, "documents": [h.text for h in hits],
-              "top_n": min(k, len(hits)), "return_documents": False},
-        timeout=20,
-    )
-    response.raise_for_status()
-    rows = response.json()["results"]
+    def request():
+        response = httpx.post(
+            ep.base_url.rstrip("/") + "/rerank",
+            headers={"Authorization": f"Bearer {ep.api_key}"},
+            json={"model": ep.model, "query": query, "documents": [h.text for h in hits],
+                  "top_n": min(k, len(hits)), "return_documents": False}, timeout=20,
+        )
+        response.raise_for_status()
+        return response.json()
+    payload = observed_call(request, kind="rerank", model=ep.model,
+                            usage_of=lambda r: r.get("usage", {}), units={"documents": len(hits)})
+    rows = payload["results"]
     ranked, seen = [], set()
     for row in rows:
         i, score = row["index"], float(row["relevance_score"])

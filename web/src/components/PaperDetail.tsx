@@ -4,6 +4,7 @@ import Markdown from "../md";
 import Evidence from "./Evidence";
 import { PaperFacts } from "./FieldEvidence";
 import { statusLabel } from "../labels";
+import DownloadProgress from "./DownloadProgress";
 
 type Tab = "report" | "experiment" | "facts" | "plan" | "fulltext" | "abstract";
 
@@ -40,6 +41,8 @@ export default function PaperDetail({
   const [askOut, setAskOut] = useState<AskReply | null>(null);
   const [repro, setRepro] = useState<ReproView | null>(null);
   const [revision, setRevision] = useState(0);
+  const [acquisition, setAcquisition] = useState<Job | null>(null);
+  const [acquiring, setAcquiring] = useState(false);
 
   const load = () =>
     api.paper(id).then(value => { setPaper(value); setRevision(n => n + 1); }).catch((e) => setErr(String(e)));
@@ -116,6 +119,28 @@ export default function PaperDetail({
     }
   };
 
+  const followDownload = async (started: Job) => {
+    setAcquiring(true); setErr(""); setAcquisition(started);
+    try { await pollJob(started.id, setAcquisition); await load(); onChanged(); }
+    catch (e) { setErr(String(e)); }
+    finally { setAcquiring(false); }
+  };
+
+  const downloadOnly = async () => {
+    setAcquiring(true); setErr("");
+    try { await followDownload(await api.download([id])); }
+    catch (e) { setErr(String(e)); setAcquiring(false); }
+  };
+
+  const uploadFulltext = async (file: File) => {
+    const replace = paper?.has_local_file === true;
+    if (replace && !window.confirm("更换本文全文？旧解析文本、报告、字段复核与索引将失效并清理，需要重新处理。文献信息与分组保留。")) return;
+    setAcquiring(true); setErr("");
+    try { await api.attachFulltext(id, file, replace); await load(); onChanged(); }
+    catch (e) { setErr(String(e)); }
+    finally { setAcquiring(false); }
+  };
+
   if (err && !paper) return <div className="detail-pane"><button onClick={onClose}>← 返回文献库</button><div className="local-error" role="alert">{err}</div><button onClick={() => { setErr(""); void load(); }}>重新加载</button></div>;
   if (!paper) return <div className="detail-pane"><div className="loading"><span className="spin" />加载中…</div></div>;
 
@@ -145,7 +170,8 @@ export default function PaperDetail({
     if (!window.confirm(`确定删除《${shown}》？\n将同时删除其原文、解析文本、知识与索引产物，不可恢复。`)) return;
     setErr("");
     try {
-      await api.deletePaper(id);
+      const result = await api.deletePaper(id);
+      if (result.cleanup_pending) window.alert("记录已移除，部分产物待清理。可到任务记录中重试清理。");
       onChanged();
       onClose();
     } catch (e) {
@@ -164,7 +190,7 @@ export default function PaperDetail({
             className="secondary"
             style={{ height: "100%" }}
             onClick={makePlan}
-            disabled={planning || processing || !paper.experiment}
+            disabled={planning || processing || acquiring || !paper.experiment}
             title={paper.experiment ? "依据实验知识生成复现方案（repro_plan.md）" : "需要先完成知识提取（experiment.json）"}
           >
             {planning ? "规划中…" : paper.repro_plan ? "重新规划" : "生成复现方案"}
@@ -173,7 +199,7 @@ export default function PaperDetail({
             className="primary"
             style={{ height: "100%" }}
             onClick={process}
-            disabled={processing || planning}
+            disabled={processing || planning || acquiring}
             title="下载全文 → 解析 → 提取实验结构与精读报告 → 向量索引。完成后可针对本文提问、生成复现方案"
           >
             {processing ? "处理中…" : paper.full_text ? "重新处理" : "一键处理"}
@@ -181,6 +207,24 @@ export default function PaperDetail({
         </div>
       </div>
       {err && <div className="local-error" role="alert">{err}</div>}
+      <section className="surface-card fulltext-actions" aria-label="获取与核对全文">
+        <h3>全文文件</h3>
+        {paper.has_local_file ? <>
+          <a className="btn-outline" href={api.originalFile(id)} target="_blank" rel="noreferrer">{paper.local_file_type === "docx" ? "下载原始 DOCX" : "打开原始 PDF"}</a>
+          {paper.local_file_type === "docx" && <p className="hint">DOCX 没有稳定页码，请按章节和证据文本核对原文。</p>}
+          <label className="btn-outline upload-btn">更换全文<input type="file" accept=".pdf,.docx" hidden disabled={processing || acquiring} aria-label="更换本文全文" onChange={(e) => {
+            const file = e.target.files?.[0]; if (file) void uploadFulltext(file); e.currentTarget.value = "";
+          }} /></label>
+        </> : <>
+          <p className="hint">可单独获取全文，也可把自己的 PDF/DOCX 补到此记录。保存后再按需分析。</p>
+          <button disabled={processing || acquiring} onClick={() => void downloadOnly()}>{acquiring ? "获取中…" : "仅下载本文全文"}</button>
+          <label className="btn-outline upload-btn">给此记录上传全文<input type="file" accept=".pdf,.docx" hidden disabled={processing || acquiring} aria-label="给此记录上传全文" onChange={(e) => {
+            const file = e.target.files?.[0]; if (file) void uploadFulltext(file); e.currentTarget.value = "";
+          }} /></label>
+          {paper.landing_page && <a href={paper.landing_page} target="_blank" rel="noreferrer">访问来源页面</a>}
+        </>}
+        {acquisition && <DownloadProgress job={acquisition} onOpenDetail={() => {}} onRetried={(j) => void followDownload(j)} />}
+      </section>
       <div className="readiness-strip"><span className={`readiness-badge ${canAsk ? "ready" : "pending"}`}>{paper.index_state?.status === "ready" ? "索引就绪" : paper.index_state?.status === "legacy" ? "历史索引，建议更新" : paper.index_state?.status === "stale" ? "索引已过期" : "尚未建立可用索引"}</span><span>{paper.index_state?.chunk_count ?? "—"} 个知识块 · 问答范围：仅本文</span>{paper.knowledge_current === false && paper.experiment && <span>知识产物需要重新核对或处理</span>}</div>
       <div className="meta-row">
         <span className={`tag status-${paper.status}`}>{statusLabel(paper.status)}</span>
@@ -240,7 +284,7 @@ export default function PaperDetail({
               ✗ {failedStage ? `「${failedStage.label}」失败：${failedStage.detail}` : `最终状态：${statusLabel(finalStatus!)}`}
               <span className="hint">
                 已完成的部分都保留了；问题排除后重新「一键处理」会跳过已完成的阶段继续推进。
-                若该论文没有开放全文，可手动下载 PDF 后用列表上方「上传」导入。
+                可使用上方“给此记录上传全文”补充原文件；下载失败也可单独重试。
               </span>
             </div>
           )}
@@ -269,12 +313,15 @@ export default function PaperDetail({
             <div className="section-block">
               {paper.repro_plan?.trim() ? (
                 <>
-                  <div className="hint" style={{ marginBottom: 8 }}>复现方案（repro_plan.md）——Agent 按此方案写原型并执行：</div>
+                  <div className="hint" style={{ marginBottom: 8 }}>复现方案：先核对资产与实验条件，再按需安排复现。</div>
                   <Markdown className="body-md" text={paper.repro_plan} />
                 </>
               ) : (
                 <div className="hint" style={{ marginBottom: 8 }}>该论文尚无复现方案，但工作区已有产物（此前由 Agent 生成）：</div>
               )}
+              <details className="advanced-experiments">
+              <summary>高级实验：代码工作区与运行记录</summary>
+              <p className="hint">运行使用本机 Python 进程，尚未提供操作系统隔离。执行前需要确认。</p>
               <ReproWorkspace repro={repro} />
               {repro && (repro.files.length > 0 || repro.runs.length > 0) && (
                 <div className="repro-handoff">
@@ -294,6 +341,7 @@ export default function PaperDetail({
                   <span className="hint">任务会预填到「助手 → Agent 任务」，确认后执行；执行器将移除检索/入库类工具</span>
                 </div>
               )}
+              </details>
             </div>
           )}
           {active === "abstract" && <div className="section-block"><div className="body">{stripHtml(paper.abstract)}</div></div>}
@@ -301,7 +349,7 @@ export default function PaperDetail({
             <div className="section-block"><Markdown className="body-md tall" text={paper.full_text ?? ""} /></div>
           )}
           {active === "experiment" && exp && <ExperimentView exp={exp} />}
-          {active === "facts" && <PaperFacts key={`${id}-${revision}`} id={id} title={paper.title} />}
+          {active === "facts" && <PaperFacts key={`${id}-${revision}`} id={id} title={paper.title} fileType={paper.has_local_file ? paper.local_file_type : null} />}
         </>
       )}
 
@@ -328,7 +376,7 @@ export default function PaperDetail({
               {askOut.sources.length > 0 && (
                 <div className="ask-src">
                   {askOut.sources.map((s, i) => (
-                    <div key={i}><span className="hint">出处 [{s.n.join(",")}] {s.page ? `第 ${s.page} 页 · ` : ""}{s.section}</span><Evidence source={s} /></div>
+                    <div key={i}><span className="hint">出处 [{s.n.join(",")}] {s.page ? `第 ${s.page} 页 · ` : ""}{s.section}</span><Evidence source={s} fileType={paper.has_local_file ? paper.local_file_type : null} /></div>
                   ))}
                 </div>
               )}

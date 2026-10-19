@@ -278,6 +278,7 @@ class ToolExecutor:
         return {
             "added": len(result.new_papers),
             "duplicates_merged": result.duplicates,
+            "selected_ids": result.selected_ids,
             "titles": [r.paper.title[:60] for r in result.new_papers],
         }
 
@@ -305,7 +306,10 @@ class ToolExecutor:
                 rec = self._lib.get(sid)
                 if rec is not None:
                     counts[rec.status] = counts.get(rec.status, 0) + 1
-        return {"total": sum(counts.values()), "by_status": counts}
+        return {"total": sum(counts.values()), "by_status": counts,
+                "scope": "selected_papers" if self._scope.allowed is not None else "whole_library",
+                "scope_label": "所选论文范围内" if self._scope.allowed is not None else "整个文献库",
+                "paper_ids": list(self._scope.allowed) if self._scope.allowed is not None else None}
 
     def _tool_explore(self, _args: dict) -> dict:
         return {"suggestions": suggest_directions(self._lib)}

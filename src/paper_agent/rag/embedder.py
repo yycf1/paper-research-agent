@@ -10,6 +10,8 @@ import time
 from openai import OpenAI
 
 from paper_agent.config import load_config, resolve_endpoint
+from paper_agent.observability import task_config
+from paper_agent.provider_calls import provider_call
 
 BATCH_SIZE = 32
 BATCH_SLEEP = 0.2  # 批间小睡，对免费档友好
@@ -24,15 +26,16 @@ def embed(
     """批量向量化。顺序与输入一致；空输入返回空列表。"""
     if not texts:
         return []
-    cfg = cfg or load_config()
+    cfg = cfg or task_config() or load_config()
     ep = resolve_endpoint(cfg["embedding"])
     if not ep.api_key:
         raise RuntimeError("未配置 Embedding API Key：请复制 .env.example 为 .env 并填入 Key")
-    client = OpenAI(base_url=ep.base_url, api_key=ep.api_key, timeout=120, max_retries=2)
+    client = OpenAI(base_url=ep.base_url, api_key=ep.api_key, timeout=120, max_retries=0)
     vectors: list[list[float]] = []
     for start in range(0, len(texts), batch_size):
         batch = texts[start : start + batch_size]
-        resp = client.embeddings.create(model=ep.model, input=batch)
+        resp = provider_call(lambda: client.embeddings.create(model=ep.model, input=batch),
+                             kind="embedding", model=ep.model, units={"texts": len(batch)})
         vectors.extend(item.embedding for item in resp.data)
         if start + batch_size < len(texts):
             time.sleep(BATCH_SLEEP)

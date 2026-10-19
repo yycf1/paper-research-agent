@@ -32,6 +32,8 @@ _PROMPT = """你是论文复现规划助手。依据给出的结构化实验知�
 
 要求：
 - 只依据输入内容，不编造；没有的信息直接写「文中未说明」；
+- 缺少代码或数据链接只能写“公开情况未确认”，不得推断“未公开/不公开/不可获取”。已有链接也只是候选，未实测不得声称可访问；
+- 每条硬件、版本、实现或训练参数建议必须标为“建议（非原文事实）”；没有依据的指标不得补写；
 - 「未验证声明」里的推断是 LLM 补全的，不要当作论文事实引用；
 - 步骤克制、可执行，总长度 500～900 字。
 
@@ -92,6 +94,22 @@ def generate_repro_plan(sid: str, *, cfg: dict, lib: Library, chat_fn=chat) -> t
         temperature=0.2,
         chat_fn=chat_fn,
     )
+    # Reject the observed unsupported asset claim instead of persisting it as fact.
+    assets = experiment.get("repro_assets") or {}
+    missing_assets = not assets.get("code_url") or not assets.get("dataset_urls")
+    if missing_assets:
+        import re
+        pattern = r"(?:代码|数据集|数据|code|dataset)[^。\n]{0,32}(?:未公开|不公开|不开放|没有公开|均未开放|not\s+(?:public|available))"
+        negative = re.search(pattern, plan, re.I)
+        if negative and negative.group(0) not in paper_text:
+            plan, repair_usage = chat_markdown_safe([
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": plan},
+                {"role": "user", "content": "上一版无依据地断言代码或数据未公开。请重写全文：缺失链接一律写公开情况未确认；建议标为建议，不得断言未公开。"},
+            ], max_tokens=2048, temperature=0.1, chat_fn=chat_fn)
+            usage = {**usage, **{key: usage.get(key, 0) + repair_usage.get(key, 0) for key in ("prompt", "completion")}}
+            if re.search(pattern, plan, re.I):
+                raise RuntimeError("复现方案仍将缺失信息写成未公开，未保存该方案；请核对资产后重试")
     out = repro_plan_path(cfg, sid)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(plan, encoding="utf-8")

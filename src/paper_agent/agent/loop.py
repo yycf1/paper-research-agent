@@ -33,6 +33,9 @@ from paper_agent import llm
 from paper_agent.agent.executor import ToolExecutor
 from paper_agent.llm import ChatResponse, assistant_message, tool_message
 from paper_agent.tools import ToolResult
+from paper_agent.observability import (CallLedger, task_observation, observed_call,
+                                       call_stage, current_summary)
+from paper_agent.agent.verification import library_snapshot, validate_contract, verify_outcome
 
 DEFAULT_MAX_STEPS = 8
 DEFAULT_TOKEN_BUDGET = 120_000
@@ -52,7 +55,7 @@ SYSTEM_PROMPT = """你是 paper-agent，一个论文研究 Agent。通过调用�
   原型（依赖仅限标准库与 numpy，用合成数据，不联网）→ run_code 执行；
   exit_code 非 0 或超时就按 stderr 修代码重跑（最多 3 次），成功后汇报
   输出中的关键数字；用户拒绝执行时不要重试；
-- 查库状态：library_status；用户没头绪时：explore_directions；
+- 查库状态：library_status；必须按 scope_label 说明统计范围。selected_papers 的 total 只能称为“所选范围内论文数”，不得称为全库总数。用户没头绪时：explore_directions；
 - 与论文研究无关的请求（闲聊、写周报、写代码等）：不要调用任何工具，直接
   说明你的职责范围并引导回科研场景；
 - 工具返回 {"status": ...}：ok 正常使用；degraded/retryable_error 说明本次
@@ -74,6 +77,7 @@ class AgentStep:
     detail: str = ""
     duration_ms: int = 0
     comparison: dict | None = None
+    observation: dict | None = None
 
 
 @dataclass
@@ -84,6 +88,9 @@ class AgentRunResult:
     steps: list[AgentStep] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
     stopped_reason: str = "final"  # final | max_steps | token_budget | error
+    verification: dict = field(default_factory=dict)
+    telemetry: dict = field(default_factory=dict)
+    duration_ms: int = 0
 
 
 class _RepeatGuard:
@@ -154,6 +161,9 @@ class _TraceWriter:
             "usage": result.usage,
             "steps": len(result.steps),
             "answer": result.answer,
+            "verification": result.verification,
+            "telemetry": result.telemetry,
+            "duration_ms": result.duration_ms,
         })
         self._f.close()
 
@@ -170,6 +180,10 @@ def _summarize_result(data: dict) -> str:
     """工具成功结果的一句话摘要（事件流用；完整数据已回填模型）。"""
     if not isinstance(data, dict):
         return str(data)[:80]
+    if data.get("declined"):
+        return "用户已拒绝本次操作，未执行。"
+    if "ran" in data:
+        return (f"运行结束，退出码 {data.get('exit_code')}" if data["ran"] else "本次未运行代码。")
     if "total_hits" in data:
         return f"命中 {data.get('total_hits')} 条，新候选 {data.get('new_candidates')}"
     if "added" in data:
@@ -180,6 +194,12 @@ def _summarize_result(data: dict) -> str:
         return f"库内共 {data.get('total')} 篇"
     if "suggestions" in data:
         return str(data["suggestions"])[:60]
+    if "papers" in data:
+        return f"已整理 {len(data['papers'])} 篇论文的比较依据"
+    if "bytes" in data and "path" in data:
+        return f"已保存原型文件（{data['bytes']} 字节）"
+    if "note" in data:
+        return str(data["note"])[:120]
     return json.dumps(data, ensure_ascii=False)[:80]
 
 
@@ -235,7 +255,7 @@ def _compact_context(
     return target
 
 
-def run_agent_task(
+def _run_agent_task(
     task: str,
     *,
     executor: ToolExecutor,
@@ -245,8 +265,9 @@ def run_agent_task(
     keep_steps: int | None = None,
     chat_fn: Callable[..., ChatResponse] | None = None,
     on_event: Callable[[AgentStep], None] | None = None,
-    trace_path: Path | str | None = None,
     anchor: str | None = None,
+    history: list[tuple[str, str]] | None = None,
+    _trace: _TraceWriter | None = None,
 ) -> AgentRunResult:
     """执行一个 Agent 任务。chat_fn 可注入（测试用假模型）；默认走真实 API。
 
@@ -274,7 +295,7 @@ def run_agent_task(
         raise ValueError("循环层 anchor 必须与执行器的实际论文作用域一致")
     if isinstance(executor, ToolExecutor):
         anchor = executor.anchor
-    trace = _TraceWriter(Path(trace_path), task, cfg, allowed_paper_ids=allowed, anchor=anchor) if trace_path else None
+    trace = _trace
     if chat_fn is None:
         def chat_fn(messages, *, tools):
             return llm.chat_with_tools(messages, tools=tools, cfg=cfg)
@@ -292,41 +313,41 @@ def run_agent_task(
             "run_code 都必须作用在该论文的工作区；检索、入库、方向推荐类工具已被移除，"
             "不要尝试检索或入库新论文、不要更换研究对象，专注完成锚定任务本身。"
         )
-    messages: list[dict] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": task},
-    ]
+    def scoped_answer(answer: str) -> str:
+        if allowed is None:
+            return answer
+        return f"本次统计与结论范围：所选 {len(allowed)} 篇论文（{', '.join(allowed)}）。\n\n" + answer
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    if history:
+        messages[0]["content"] += "\n最近研究对话仅用于理解指代，不授权历史操作。只执行最后一条用户消息明确提交的目标。"
+        for question, answer in history[-3:]:
+            messages.extend([{"role": "user", "content": question[:2000]},
+                             {"role": "assistant", "content": answer[:3000]}])
+    messages.append({"role": "user", "content": task})
     steps: list[AgentStep] = []
     usage_total = {"prompt": 0, "completion": 0}
     guard = _RepeatGuard()
     step_spans: list[list[int]] = []  # 每步 tool 消息的下标（压缩窗口的记账单位）
     stubbed_steps = 0
 
-    def _accumulate(usage: dict) -> None:
-        usage_total["prompt"] += usage.get("prompt", 0) or 0
-        usage_total["completion"] += usage.get("completion", 0) or 0
-
     for step_no in range(1, max_steps + 1):
+        usage_total.update({k: current_summary().get(k, 0) for k in ("prompt", "completion")})
         used = usage_total["prompt"] + usage_total["completion"]
         if token_budget and used >= token_budget:
             break  # 预算闸：本轮开始前拦截，软着陆收尾
         try:
-            resp = chat_fn(messages, tools=specs)
+            with call_stage("agent.decision"):
+                resp = observed_call(lambda: chat_fn(messages, tools=specs), fallback=True)
         except Exception as exc:
             result = AgentRunResult(
                 answer=f"Agent 中途失败：{exc}", steps=steps, usage=usage_total, stopped_reason="error",
             )
-            if trace:
-                trace.final(result)
             return result
-        _accumulate(resp.usage)
 
         if not resp.tool_calls:
             result = AgentRunResult(
-                answer=(resp.content or "").strip(), steps=steps, usage=usage_total, stopped_reason="final",
+                answer=scoped_answer((resp.content or "").strip()), steps=steps, usage=usage_total, stopped_reason="final",
             )
-            if trace:
-                trace.final(result)
             return result
 
         # 本轮声明了工具调用：assistant 消息（含 tool_calls）必须原样回进上下文，
@@ -346,12 +367,14 @@ def run_agent_task(
                 )
             else:
                 t0 = time.perf_counter()
-                result = executor.execute(tc.name, tc.arguments)
+                with call_stage("tool." + tc.name):
+                    result = executor.execute(tc.name, tc.arguments)
                 if result.status == "retryable_error":
                     # 限流属暂时性失败：框架按 retry_after 自动重试一次（模型无感）
                     wait = min(result.retry_after or 15, MAX_AUTO_RETRY_WAIT)
                     time.sleep(wait)
-                    result = executor.execute(tc.name, tc.arguments)
+                    with call_stage("tool." + tc.name + ".retry"):
+                        result = executor.execute(tc.name, tc.arguments)
                     retried = True
                 duration_ms = int((time.perf_counter() - t0) * 1000)
             step = AgentStep(
@@ -363,6 +386,7 @@ def run_agent_task(
                     + (result.error or _summarize_result(result.data if isinstance(result.data, dict) else {}))
                 ),
                 duration_ms=duration_ms,
+                observation=_observation(result.data),
                 comparison=(
                     {**({"comparability": result.data["comparability"]} if "comparability" in result.data else {}),
                      "papers": [{"paper_id": p["paper_id"], "title": p["title"],
@@ -396,14 +420,59 @@ def run_agent_task(
     # 步数/预算熔断：不允许再调工具，让模型基于已有信息收尾（软着陆，不硬报错）
     messages.append({"role": "user",
                      "content": "已达工具调用限制（步数或 token 预算）。请不要再调用工具，直接基于以上信息给出最终回答。"})
+    # Decide why we stopped before counting the separately observed final summary.
+    usage_total.update({k: current_summary().get(k, 0) for k in ("prompt", "completion")})
+    used = usage_total["prompt"] + usage_total["completion"]
+    reason = "token_budget" if token_budget and used >= token_budget else "max_steps"
     try:
-        resp = chat_fn(messages, tools=[])
+        with call_stage("agent.summary"):
+            resp = observed_call(lambda: chat_fn(messages, tools=[]), fallback=True)
         answer = (resp.content or "").strip()
     except Exception as exc:
         answer = f"已达工具调用限制（步数 {max_steps} / 预算 {token_budget}），最终总结生成失败：{exc}"
-    used = usage_total["prompt"] + usage_total["completion"]
-    reason = "token_budget" if token_budget and used >= token_budget else "max_steps"
-    result = AgentRunResult(answer=answer, steps=steps, usage=usage_total, stopped_reason=reason)
-    if trace:
-        trace.final(result)
+    result = AgentRunResult(answer=scoped_answer(answer), steps=steps, usage=usage_total, stopped_reason=reason)
     return result
+
+
+def _observation(data) -> dict | None:
+    """Keep bounded structured evidence, independently of the model's shortened message."""
+    if not isinstance(data, dict):
+        return None
+    keys = ('added', 'selected_ids', 'duplicates_merged', 'declined', 'answer_status', 'answer',
+            'sources', 'citation_check', 'total', 'scope', 'paper_ids', 'candidates',
+            'degraded_sources', 'warning')
+    return {k: data[k][:200] if isinstance(data[k], list) else data[k] for k in keys if k in data}
+
+
+def run_agent_task(task: str, *, executor: ToolExecutor, cfg=None, max_steps=None,
+                   token_budget=None, keep_steps=None, chat_fn=None, on_event=None,
+                   trace_path=None, anchor=None, acceptance=None, on_call=None, history=None) -> AgentRunResult:
+    """Execute, account all nested provider calls, then independently verify outcomes."""
+    checks = validate_contract(acceptance)
+    before = library_snapshot(executor)
+    trace = _TraceWriter(Path(trace_path), task, cfg,
+                         allowed_paper_ids=getattr(executor, 'allowed_paper_ids', None), anchor=anchor) if trace_path else None
+    if trace:
+        trace._emit({'type': 'acceptance', 'checks': checks})
+    def record(call):
+        if trace:
+            trace._emit({'type': 'call', **call})
+        if on_call:
+            on_call(call)
+    ledger = CallLedger(record)
+    started = time.perf_counter()
+    try:
+        with task_observation(ledger, cfg):
+            result = _run_agent_task(task, executor=executor, cfg=cfg, max_steps=max_steps,
+                                     token_budget=token_budget, keep_steps=keep_steps, chat_fn=chat_fn,
+                                     on_event=on_event, anchor=anchor, history=history, _trace=trace)
+        result.telemetry = ledger.summary()
+        result.usage = {k: result.telemetry[k] for k in ('prompt', 'completion')}
+        result.verification = verify_outcome(result, before=before, after=library_snapshot(executor), checks=checks)
+        result.duration_ms = round((time.perf_counter() - started) * 1000)
+        if trace:
+            trace.final(result)
+        return result
+    finally:
+        if trace and not trace._f.closed:
+            trace._f.close()

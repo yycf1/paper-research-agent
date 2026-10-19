@@ -209,6 +209,29 @@ def test_agent_confirm_on_running_task_409(monkeypatch, tmp_path):
     assert r.status_code == 409
 
 
+def test_agent_contract_validation_and_history_accounting(monkeypatch, tmp_path):
+    client = _client(monkeypatch, tmp_path)
+    for invalid in ([{'kind': 'unknown'}], [{'kind': []}], [{'kind': 'tool_success'}],
+                    [{'kind': 'library_add', 'min_added': True}],
+                    [{'kind': 'no_library_mutation', 'tools': ['add_papers']}]):
+        assert client.post('/api/agent/tasks', json={'task': 'check', 'acceptance': invalid}).status_code == 400
+    script = [_tool_resp('library_status', '{}', 'c'), _final('已查看文献状态')]
+    monkeypatch.setattr('paper_agent.llm.chat_with_tools', lambda *a, **k: script.pop(0))
+    response = client.post('/api/agent/tasks', json={'task': '查库状态', 'acceptance': [
+        {'kind': 'tool_success', 'tools': ['library_status']}, {'kind': 'no_library_mutation'}]})
+    assert response.status_code == 202
+    task_id = response.json()['id']
+    live = _wait_status(client, task_id, {'done', 'error'})
+    assert live['verification']['status'] == 'passed'
+    assert live['telemetry']['call_count'] == 2
+    from paper_agent.server.routes import _history_task
+    trace = next((tmp_path / 'data' / 'traces' / 'web').glob(f'*-{task_id}.jsonl'))
+    disk = _history_task(trace, with_steps=True)
+    assert disk['telemetry'] == live['telemetry']
+    assert disk['verification'] == live['verification']
+    assert disk['steps'][0]['observation']['total'] == 0
+
+
 def test_agent_anchor_rejects_unknown_paper(monkeypatch, tmp_path):
     """锚定不存在的论文 → 404，任务不启动。"""
     client = _client(monkeypatch, tmp_path)

@@ -181,7 +181,7 @@ def test_readonly_chat_redirects_search_without_ingest(tmp_path, monkeypatch):
         monkeypatch.setattr(asst, "search_and_ingest", forbidden)
         reply = asst.handle_message("找几篇论文入库", lib=lib, retriever=_FakeRetriever(),
                                     params={}, cfg=_cfg(), allow_ingest=False)
-        assert reply.intent == "search" and "执行任务" in reply.reply
+        assert reply.intent == "search" and "执行操作" in reply.reply
         assert not reply.new_papers and lib.counts() == {}
     finally:
         lib.close()

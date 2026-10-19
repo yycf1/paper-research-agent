@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from openai import OpenAI, RateLimitError
 
 from paper_agent.config import load_config, resolve_endpoint
+from paper_agent.observability import task_config, normalize_usage
+from paper_agent.provider_calls import provider_call
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
 
@@ -58,17 +60,17 @@ def _complete(
     tool_choice: str | None = None,
 ) -> ChatResponse:
     """限流退避重试的补全核心（chat / chat_with_tools 共用）。"""
-    cfg = cfg or load_config()
+    cfg = cfg or task_config() or load_config()
     if thinking is None:
         thinking = cfg.get("llm", {}).get("thinking")
     ep = resolve_endpoint(cfg["llm"])
     if not ep.api_key:
         raise RuntimeError("未配置 LLM API Key：请复制 .env.example 为 .env 并填入 Key")
-    client = OpenAI(base_url=ep.base_url, api_key=ep.api_key, timeout=180, max_retries=2)
+    client = OpenAI(base_url=ep.base_url, api_key=ep.api_key, timeout=180, max_retries=0)
     extra: dict = {}
     if thinking is not None:
         extra["extra_body"] = (
-            {"enable_thinking": thinking} if "siliconflow" in ep.base_url
+            {"enable_thinking": thinking} if any(host in ep.base_url for host in ('siliconflow', 'dashscope.aliyuncs.com', 'dashscope-intl.aliyuncs.com', 'dashscope-us.aliyuncs.com'))
             else {"thinking": {"type": "enabled" if thinking else "disabled"}}
         )
     if tools:
@@ -78,19 +80,16 @@ def _complete(
     last_exc: RateLimitError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            resp = client.chat.completions.create(
+            resp = provider_call(lambda: client.chat.completions.create(
                 model=ep.model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 **extra,
-            )
+            ), model=ep.model, retry_rate_limit=False)
             usage = resp.usage
-            usage_dict = {
-                "prompt": getattr(usage, "prompt_tokens", 0) or 0,
-                "completion": getattr(usage, "completion_tokens", 0) or 0,
-                "model": ep.model,
-            }
+            usage_dict = {k: v for k, v in normalize_usage(usage).items() if k != 'total'}
+            usage_dict['model'] = ep.model
             msg = resp.choices[0].message
             raw_calls = getattr(msg, "tool_calls", None) or []
             tool_calls = [

@@ -1,25 +1,18 @@
-"""后台任务管理：流水线等长任务的线程执行与状态轮询。
-
-SQLite 账本只存论文状态，不存「一次运行」的过程数据——任务状态放进程
-内存（重启丢失可接受：library.db 是断点续跑的事实来源，重跑同主题即恢复）。
-"""
-
+"""Durable background jobs. Interrupted work is recorded, never silently resumed."""
 from __future__ import annotations
 
+import json
+import sqlite3
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
-
-# 全局任务表：job_id → Job。锁只保护表本身的读写，任务体在各自线程里跑。
-_JOBS: dict[str, "Job"] = {}
-_LOCK = threading.Lock()
 
 
 @dataclass
 class Job:
-    """一次后台任务。status: running → done | error。"""
-
     id: str
     kind: str
     status: str = "running"
@@ -29,41 +22,87 @@ class Job:
     finished_at: float = 0.0
 
     def to_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "kind": self.kind,
-            "status": self.status,
-            "result": self.result,
-            "error": self.error,
-        }
+        return json.loads(json.dumps(self.__dict__, ensure_ascii=False))
 
 
-def submit(kind: str, fn: Callable[[dict], dict], *, result: dict | None = None) -> Job:
-    """提交后台任务：fn(job.result) 在新线程执行，返回值并入 result。"""
-    job = Job(id=uuid.uuid4().hex[:12], kind=kind)
-    if result:
-        job.result.update(result)
+class _Progress(dict):
+    def __init__(self, value, changed):
+        super().__init__(value)
+        self.changed = changed
 
-    def _run():
-        try:
-            extra = fn(job.result) or {}
-            job.result.update(extra)
-            job.status = "done"
-        except Exception as exc:  # 任务体自带降级，到这里的是意外错误
-            job.status = "error"
-            job.error = f"{type(exc).__name__}: {exc}"[:500]
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self.changed()
 
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.changed()
+
+
+class JobRegistry:
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._lock = threading.RLock()
+        self._jobs: dict[str, Job] = {}
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
+            for (payload,) in conn.execute("SELECT payload FROM jobs ORDER BY rowid"):
+                job = Job(**json.loads(payload))
+                self._jobs[job.id] = job
+        for job in self._jobs.values():
+            if job.status == "running":
+                job.status = "interrupted"
+                job.finished_at = time.time()
+                job.error = "服务在任务完成前停止；已保留逐篇结果，可重试未完成项。"
+                for item in job.result.get("items", []):
+                    if item.get("status") in {"pending", "running"}:
+                        item.update(status="interrupted", detail="服务停止，未确认下载完成；重试时会检查本地文件")
+                self.save(job)
+
+    def save(self, job: Job) -> None:
+        with self._lock, sqlite3.connect(self.db_path, timeout=30) as conn:
+            conn.execute("INSERT OR REPLACE INTO jobs VALUES (?, ?)",
+                         (job.id, json.dumps(job.to_dict(), ensure_ascii=False)))
+            self._jobs[job.id] = job
+
+    def submit(self, kind: str, fn: Callable[[dict], dict], *, result: dict | None = None) -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], kind=kind, started_at=time.time())
+        job.result = _Progress(result or {}, lambda: self.save(job))
+        self.save(job)
+
+        def run():
+            try:
+                extra = fn(job.result) or {}
+                job.result.update(extra)
+                job.status = "done"
+            except Exception as exc:
+                job.status = "error"
+                job.error = f"{type(exc).__name__}: {exc}"[:1000]
+            finally:
+                job.finished_at = time.time()
+                self.save(job)
+
+        threading.Thread(target=run, daemon=True).start()
+        return job
+
+    def get(self, job_id: str) -> Job | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def list_jobs(self) -> list[Job]:
+        with self._lock:
+            return list(self._jobs.values())
+
+
+_REGISTRIES: dict[str, JobRegistry] = {}
+_LOCK = threading.Lock()
+
+
+def registry_for(cfg: dict) -> JobRegistry:
+    from paper_agent import paths
+    path = (paths.data_dir(cfg) / "jobs.db").resolve()
     with _LOCK:
-        _JOBS[job.id] = job
-    threading.Thread(target=_run, daemon=True).start()
-    return job
-
-
-def get(job_id: str) -> Job | None:
-    with _LOCK:
-        return _JOBS.get(job_id)
-
-
-def list_jobs() -> list[Job]:
-    with _LOCK:
-        return list(_JOBS.values())
+        if str(path) not in _REGISTRIES:
+            _REGISTRIES[str(path)] = JobRegistry(path)
+        return _REGISTRIES[str(path)]

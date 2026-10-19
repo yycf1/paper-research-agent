@@ -115,7 +115,7 @@ def eval_agent_cmd(
     ),
     trace: bool = typer.Option(False, "--trace", help="每个任务的轨迹存档到 data/traces/agent-eval/"),
 ) -> None:
-    """Agent 任务评测：完成率 / 工具合规 / 答案命中 / 平均成本（消耗 LLM 调用）。"""
+    """Agent 任务评测：结果验收 / 工具合规 / 关键词命中 / 已报告用量（消耗 LLM 调用）。"""
     from paper_agent.agent.eval_agent import (
         aggregate_results,
         load_agent_tasks,
@@ -133,8 +133,9 @@ def eval_agent_cmd(
     lib = _library(cfg)
     try:
         store = VectorStore(_data_dir(cfg) / "db")
-        retriever = Retriever(store) if store.count() > 0 else None
-        trace_dir = paths.data_dir(cfg) / "traces" / "agent-eval" if trace else None
+        retriever = Retriever(store, cfg=cfg) if store.count() > 0 else None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        trace_dir = paths.data_dir(cfg) / "traces" / "agent-eval" / stamp if trace else None
 
         def _factory() -> ToolExecutor:
             return ToolExecutor(lib=lib, retriever=retriever, cfg=cfg)
@@ -146,7 +147,8 @@ def eval_agent_cmd(
                 f"[dim]{len(r.steps)} 步｜工具：{','.join(r.tools_used) or '无'}[/dim]"
             )
 
-        results = run_agent_evalset(cases, executor_factory=_factory, cfg=cfg, on_result=_on_result)
+        results = run_agent_evalset(cases, executor_factory=_factory, cfg=cfg,
+                                    on_result=_on_result, trace_dir=trace_dir)
     finally:
         lib.close()
 
@@ -156,7 +158,7 @@ def eval_agent_cmd(
     table.add_column("步数", justify="right")
     table.add_column("tokens", justify="right")
     table.add_column("工具", overflow="fold", max_width=30)
-    table.add_column("完成", justify="center")
+    table.add_column("结果验收", justify="center")
     table.add_column("合规", justify="center")
     table.add_column("答案", justify="center")
     for r in results:
@@ -165,15 +167,17 @@ def eval_agent_cmd(
         table.add_row(
             r.task_id, r.kind, str(len(r.steps)), str(tokens),
             ",".join(r.tools_used) or "–",
-            mark[r.completed], mark[r.tool_ok], mark[r.answer_ok],
+            {"passed": "通过", "failed": "未达成", "partial": "部分完成", "unverified": "待核验"}.get(r.verification.get('status'), '待核验'),
+            mark[r.tool_ok], mark[r.answer_ok],
         )
         if trace_dir:
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             trace_dir.mkdir(parents=True, exist_ok=True)
-            out = trace_dir / f"{r.task_id}-{stamp}.jsonl"
+            out = trace_dir / f"result-{results.index(r):03d}.json"
             out.write_text(json.dumps({
                 "task": r.task, "answer": r.answer, "stopped_reason": r.stopped_reason,
                 "usage": r.usage, "violations": r.violations,
+                "verification": r.verification, "telemetry": r.telemetry,
+                "execution_finished": r.execution_finished, "completed": r.completed,
                 "steps": [dict(step=idx + 1, tool=s.tool, arguments=s.arguments,
                                status=s.status, detail=s.detail)
                           for idx, s in enumerate(r.steps)],
@@ -182,11 +186,13 @@ def eval_agent_cmd(
 
     agg = aggregate_results(results)
     console.print(
-        f"\n[bold]任务完成率 {agg['completion_rate']:.0%}[/bold]"
+        f"\n[bold]已核验完成占全部任务 {agg['completion_rate']:.0%}[/bold]"
+        + f"｜执行结束 {agg['execution_finished_rate']:.0%}｜待核验 {agg['unverified_tasks']} 项"
         + (f"｜工具合规率 {agg['tool_ok_rate']:.0%}" if agg["tool_ok_rate"] is not None else "")
         + (f"｜答案命中率 {agg['answer_ok_rate']:.0%}" if agg["answer_ok_rate"] is not None else "")
         + f"｜平均 {agg['avg_steps']:.1f} 步 / {agg['avg_tokens']:.0f} tokens"
-        + f"｜越界操作 {agg['violations']} 次"
+        + f"｜工具约束问题 {agg['violations']} 项"
+        + f"｜用量完整 {agg['usage_complete_tasks']}/{agg['total']} 项"
     )
     for kind, stat in agg["by_kind"].items():
         console.print(f"  [dim]{kind}：{stat['completed']}/{stat['total']} 完成[/dim]")

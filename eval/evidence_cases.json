@@ -1,289 +1,82 @@
 {
   "schema_version": 1,
-  "scope": "development_diagnostics_assistant_text_checked_not_independent_blind_test",
-  "annotation_note": "Seed labels checked against existing extracted text only; not human-verified, exhaustive, or a new independent test.",
-  "corpus_sha256": "663d9f44e0c2695131c41f0f88a5123ef3668a9c8bc6220e6b9f9cc505c4c508",
+  "scope": "original_synthetic_offline_demonstration_not_quality_benchmark",
+  "corpus_sha256": "23594b6df13b2f3c5dc9ab81d092daba1a81831929ffedf35153e96f4267b2ce",
   "cases": [
     {
-      "id": "glaucoma-datasets",
-      "kind": "single_paper",
-      "question": "Glaucoma framework 使用了哪些眼底图像数据集？",
+      "id": "alpha-dataset",
+      "kind": "synthetic_demo",
+      "question": "Which dataset DATA-ALPHA is used in Synthetic study Alpha?",
       "annotation_status": "text_checked",
       "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
+      "annotation_basis": "original_synthetic_fixture_not_real_paper_or_human_review",
       "should_answer": true,
       "expected_facts": [
-        "ORIGA",
-        "REFUGE2"
+        "DATA-ALPHA"
       ],
       "evidence_groups": [
         [
           {
-            "paper_id": "europepmc:PMC13413154",
-            "chunk_id": "europepmc:PMC13413154::1",
-            "text_sha256": "577b2da16d7da1c9f079f6926b06d7e21629abc5993b8459df245d0c40e77da0",
-            "quote": "                deep learning pipeline, trained and tested on the ORIGA and REFUGE2 fundus image\n                              datasets. Each image is resized, denoised with median filtering, and contrast-enhanced\n                          through histogram equalisation and normalisation, then cropped down to the optic nerve\n                            region using central cropping and intensity-b"
-          }
-        ]
-      ],
-      "paper_id": "europepmc:PMC13413154"
-    },
-    {
-      "id": "glaucoma-preprocessing",
-      "kind": "single_paper",
-      "question": "该 glaucoma framework 对图像做了哪些预处理？",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "resized",
-        "median filtering",
-        "histogram equalisation"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "europepmc:PMC13413154",
-            "chunk_id": "europepmc:PMC13413154::1",
-            "text_sha256": "577b2da16d7da1c9f079f6926b06d7e21629abc5993b8459df245d0c40e77da0",
-            "quote": "                              datasets. Each image is resized, denoised with median filtering, and contrast-enhanced\n                          through histogram equalisation and normalisation, then cropped down to the optic nerve\n                            region using central cropping and intensity-based localisation. Methods: A custom encod-\n                           er–decoder CNN segments th"
-          }
-        ]
-      ],
-      "paper_id": "europepmc:PMC13413154"
-    },
-    {
-      "id": "drugpred-dataset",
-      "kind": "single_paper",
-      "question": "DrugPred 的 drug-drug interaction 建模使用哪个数据集？",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "TwoSIDES"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "europepmc:PMC13462213",
-            "chunk_id": "europepmc:PMC13462213::1",
-            "text_sha256": "48a7841e7bf842c43359d48daff78bdebd18bfd42a76beea72f0812592e59796",
-            "quote": "distribution or reproduction in         model drug-drug interactions using the TwoSIDES dataset, capturing relational\nother forums is permitted, provided the          dependencies by utilizing pairwise statistical values such as co-occurrence\noriginal author(s) and the copyright\n                                     frequency and interaction statistics derived from pharmacovigilance signals,owner(s"
-          },
-          {
-            "paper_id": "europepmc:PMC13462213",
-            "chunk_id": "europepmc:PMC13462213::2",
-            "text_sha256": "b0492892782e3f48515c7f5b41ae8a89bd0ebdb7e14c6eca080db120d020caff",
-            "quote": "distribution or reproduction in         model drug-drug interactions using the TwoSIDES dataset, capturing relational\nother forums is permitted, provided the          dependencies by utilizing pairwise statistical values such as co-occurrence\noriginal author(s) and the copyright\n                                     frequency and interaction statistics derived from pharmacovigilance signals,owner(s"
-          }
-        ]
-      ],
-      "paper_id": "europepmc:PMC13462213"
-    },
-    {
-      "id": "drugpred-language-model",
-      "kind": "single_paper",
-      "question": "DrugPred 在第三阶段采用了哪个文本模型？",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "Bio_ClinicalBERT"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "europepmc:PMC13462213",
-            "chunk_id": "europepmc:PMC13462213::2",
-            "text_sha256": "b0492892782e3f48515c7f5b41ae8a89bd0ebdb7e14c6eca080db120d020caff",
-            "quote": "ncluding transformed PRR-based signals. In the third phase, Bio_ClinicalBERT,\ncited, in accordance with accepted            which is a pre-trained transformer-based language model speciﬁcally trained on\nacademic practice. No use, distribution\n                                                clinical notes and biomedical text, is used to encode drug pair representationsor reproduction is permitted w"
-          }
-        ]
-      ],
-      "paper_id": "europepmc:PMC13462213"
-    },
-    {
-      "id": "swin-input",
-      "kind": "single_paper",
-      "question": "Swin Unet3D 摘要讨论的是哪种维度和模态的医学影像？",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "3D",
-        "magnetic resonance imaging"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "openalex:W4320728002",
-            "chunk_id": "openalex:W4320728002::1",
-            "text_sha256": "ee3cf739c9cd761533051fc6a2155ce625092ee0d23175420293c952df94820a",
-            "quote": "《Swin Unet3D: a three-dimensional medical image segmentation network combining vision transformer and convolution》 Abstract\n\nBackground  Semantic segmentation of brain tumors plays a critical role in clinical treatment, especially for three-\n dimensional (3D) magnetic resonance imaging, which is often used in clinical practice. Automatic segmentation of\n the 3D structure of"
-          }
-        ]
-      ],
-      "paper_id": "openalex:W4320728002"
-    },
-    {
-      "id": "swin-cnn-limit",
-      "kind": "single_paper",
-      "question": "Swin Unet3D 摘要指出 CNN 在学习哪类依赖信息时有局限？",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "long-distance dependent information"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "openalex:W4320728002",
-            "chunk_id": "openalex:W4320728002::1",
-            "text_sha256": "ee3cf739c9cd761533051fc6a2155ce625092ee0d23175420293c952df94820a",
-            "quote": "lutional operations generally does not\n exceed 7 × 7 × 7 , which also leads to CNNs showing limitations in learning long-distance dependent information.\n  Vision Transformer (ViT) is very good at learning long-distance dependent information in images, but it suffers from\n the problems of many parameters. What’s worse, the ViT cannot learn local dependency information in the previous\n  layers under"
-          }
-        ]
-      ],
-      "paper_id": "openalex:W4320728002"
-    },
-    {
-      "id": "gist-reported-metrics",
-      "kind": "global",
-      "question": "哪篇 GIST segmentation 文献报告了 DC、mean IoU 和 accuracy？分别是什么数值？",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "93.11",
-        "0.8837",
-        "97.75"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "europepmc:PMC13489454",
-            "chunk_id": "europepmc:PMC13489454::5",
-            "text_sha256": "e1eaa8b795d2bace25a47ef98706ffd4fb1126acd481629658808403d1493bc8",
-            "quote": "s MViT architecture combinations with a high DC of 93.11, mean IoU of 0.8837, and\n  accuracy of 97.75 pixels."
-          },
-          {
-            "paper_id": "europepmc:PMC13489454",
-            "chunk_id": "europepmc:PMC13489454::6",
-            "text_sha256": "2bfc06258b3cf82856df5bf71e7f17146573726c13268741aa63bf3f18adfe9e",
-            "quote": "s MViT architecture combinations with a high DC of 93.11, mean IoU of 0.8837, and\n  accuracy of 97.75 pixels."
+            "paper_id": "synthetic:alpha",
+            "chunk_id": "synthetic:alpha::0",
+            "text_sha256": "358cb1bbb313f5078268785234ed3e5897aa4978c922cd59bf21327c99cf3b91",
+            "quote": "Synthetic study Alpha investigates image segmentation using DATA-ALPHA."
           }
         ]
       ]
     },
     {
-      "id": "drugpred-doi",
-      "kind": "global",
-      "question": "DrugPred 的 DOI 是什么？",
+      "id": "alpha-dice",
+      "kind": "synthetic_demo",
+      "question": "What Dice value does Synthetic study Alpha report?",
       "annotation_status": "text_checked",
       "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
+      "annotation_basis": "original_synthetic_fixture_not_real_paper_or_human_review",
       "should_answer": true,
       "expected_facts": [
-        "10.3389/frai.2026.1874825"
+        "0.91"
       ],
       "evidence_groups": [
         [
           {
-            "paper_id": "europepmc:PMC13462213",
-            "chunk_id": "europepmc:PMC13462213::0",
-            "text_sha256": "50236ffb00b040b7dfc8070e569649274b1947b9594dae8731e86c8ef66207f7",
-            "quote": "                                        DOI 10.3389/frai.2026.1874825\n\nDrugPred: an EdgeConv-GNN\nOPEN ACCESS          and Bio_ClinicalBERT based\n\nEDITED BYHuixiao Hong,           polypharmacy ADR prediction\nUnited States Food and Drug\nAdministration, United States              and specialist recommendation"
+            "paper_id": "synthetic:alpha",
+            "chunk_id": "synthetic:alpha::1",
+            "text_sha256": "1f64a73dd97848758cb89d7c85063b59ec2452dd91691bc89130ad380af73afa",
+            "quote": "Synthetic study Alpha reports Dice 0.91 on DATA-ALPHA test split. Accuracy 0.99 is a different metric."
           }
         ]
       ]
     },
     {
-      "id": "glaucoma-followup",
-      "kind": "multi_turn",
-      "question": "它训练和测试用了哪些数据集？",
+      "id": "cross-study-dice",
+      "kind": "synthetic_demo",
+      "question": "Synthetic study Alpha Beta Dice evaluation split",
       "annotation_status": "text_checked",
       "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
+      "annotation_basis": "original_synthetic_fixture_not_real_paper_or_human_review",
       "should_answer": true,
       "expected_facts": [
-        "ORIGA",
-        "REFUGE2"
+        "test",
+        "validation"
       ],
       "evidence_groups": [
         [
           {
-            "paper_id": "europepmc:PMC13413154",
-            "chunk_id": "europepmc:PMC13413154::1",
-            "text_sha256": "577b2da16d7da1c9f079f6926b06d7e21629abc5993b8459df245d0c40e77da0",
-            "quote": "                deep learning pipeline, trained and tested on the ORIGA and REFUGE2 fundus image\n                              datasets. Each image is resized, denoised with median filtering, and contrast-enhanced\n                          through histogram equalisation and normalisation, then cropped down to the optic nerve\n                            region using central cropping and intensity-b"
-          }
-        ]
-      ],
-      "paper_id": "europepmc:PMC13413154",
-      "history": [
-        [
-          "请介绍这个 Lightweight Vision Transformer glaucoma framework。",
-          "它是一种结合视网膜生物标志物的青光眼检测框架。"
-        ]
-      ],
-      "retrieval_query": "glaucoma ORIGA REFUGE2 fundus image datasets",
-      "query_note": "Offline run uses this editorial query; model rewriting is not evaluated."
-    },
-    {
-      "id": "cross-paper-datasets",
-      "kind": "cross_paper",
-      "question": "Glaucoma framework 和 DrugPred 分别用了哪些数据集？请分别列出，不比较效果优劣。",
-      "retrieval_query": "glaucoma ORIGA REFUGE2 DrugPred TwoSIDES datasets",
-      "annotation_status": "text_checked",
-      "annotation_by": "assistant",
-      "annotation_basis": "indexed_extracted_text_not_original_pdf_or_human_review",
-      "should_answer": true,
-      "expected_facts": [
-        "Glaucoma: ORIGA, REFUGE2",
-        "DrugPred: TwoSIDES"
-      ],
-      "evidence_groups": [
-        [
-          {
-            "paper_id": "europepmc:PMC13413154",
-            "chunk_id": "europepmc:PMC13413154::1",
-            "text_sha256": "577b2da16d7da1c9f079f6926b06d7e21629abc5993b8459df245d0c40e77da0",
-            "quote": "                deep learning pipeline, trained and tested on the ORIGA and REFUGE2 fundus image\n                              datasets. Each image is resized, denoised with median filtering, and contrast-enhanced\n                          through histogram equalisation and normalisation, then cropped down to the optic nerve\n                            region using central cropping and intensity-b"
+            "paper_id": "synthetic:alpha",
+            "chunk_id": "synthetic:alpha::1",
+            "text_sha256": "1f64a73dd97848758cb89d7c85063b59ec2452dd91691bc89130ad380af73afa",
+            "quote": "Synthetic study Alpha reports Dice 0.91 on DATA-ALPHA test split. Accuracy 0.99 is a different metric."
           }
         ],
         [
           {
-            "paper_id": "europepmc:PMC13462213",
-            "chunk_id": "europepmc:PMC13462213::1",
-            "text_sha256": "48a7841e7bf842c43359d48daff78bdebd18bfd42a76beea72f0812592e59796",
-            "quote": "distribution or reproduction in         model drug-drug interactions using the TwoSIDES dataset, capturing relational\nother forums is permitted, provided the          dependencies by utilizing pairwise statistical values such as co-occurrence\noriginal author(s) and the copyright\n                                     frequency and interaction statistics derived from pharmacovigilance signals,owner(s"
-          },
-          {
-            "paper_id": "europepmc:PMC13462213",
-            "chunk_id": "europepmc:PMC13462213::2",
-            "text_sha256": "b0492892782e3f48515c7f5b41ae8a89bd0ebdb7e14c6eca080db120d020caff",
-            "quote": "distribution or reproduction in         model drug-drug interactions using the TwoSIDES dataset, capturing relational\nother forums is permitted, provided the          dependencies by utilizing pairwise statistical values such as co-occurrence\noriginal author(s) and the copyright\n                                     frequency and interaction statistics derived from pharmacovigilance signals,owner(s"
+            "paper_id": "synthetic:beta",
+            "chunk_id": "synthetic:beta::0",
+            "text_sha256": "ae78b35f71c42e44ec2f96f3d2829c195b86c1541cecedc29ee67a0c29d6fd7e",
+            "quote": "Synthetic study Beta reports Dice 0.88 on DATA-BETA validation split. Its evaluation split differs from Alpha."
           }
         ]
       ]
-    },
-    {
-      "id": "glaucoma-resource-details",
-      "kind": "insufficient_evidence_candidate",
-      "paper_id": "europepmc:PMC13413154",
-      "question": "该 glaucoma framework 的训练 GPU 型号和总耗电量分别是多少？",
-      "annotation_status": "pending",
-      "should_answer": null,
-      "expected_facts": [],
-      "evidence_groups": [],
-      "annotation_note": "未完整核对原文，不能从未找到片段推断论文未报告。暂不评分。"
     }
   ]
 }
